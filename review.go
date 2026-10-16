@@ -39,6 +39,7 @@ func proves(proof string, passed []string) bool {
 
 // Review applies a reviewer's report to the book. reviewer names the source; passed lists the checks
 // that passed on this attempt. The rules, from spec §4.6:
+//   - no finding has an id in the checks' space (check-<name>);
 //   - every finding in the report is the reviewer's own (its source is the reviewer's id);
 //   - every finding the reviewer still held open is in the report, so none disappears unmentioned;
 //   - a finding closes (status fixed) only with proof: a file:line and the name of a check that passed;
@@ -59,6 +60,8 @@ func (b *Book) Review(attempt int, reviewer string, passed []string, report gung
 			return bad("finding %s says its source is %q", f.ID, f.Source)
 		case known && old.Source != reviewer:
 			return bad("finding %s belongs to %s", f.ID, old.Source)
+		case strings.HasPrefix(f.ID, CheckPrefix):
+			return bad("finding %s uses the id space of the checks (%s...)", f.ID, CheckPrefix)
 		case f.Status == gungnir.FindingFixed && (!known || !old.isOpen()):
 			return bad("finding %s is closed in the report but was not open", f.ID)
 		case f.Status == gungnir.FindingFixed && !proves(f.Proof, passed):

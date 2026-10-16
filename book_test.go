@@ -2,6 +2,7 @@ package jormungandr
 
 import (
 	"encoding/json"
+	"errors"
 	"slices"
 	"testing"
 
@@ -23,11 +24,11 @@ func ids(fs []gungnir.Finding) []string {
 func TestACheckThatKeepsFailingKeepsOneFinding(t *testing.T) {
 	var b Book
 	f := finding("check-test", "test", gungnir.SeverityBlocker)
-	if ch := b.CheckFailed(1, f); len(ch) != 1 || ch[0].Kind != Raised || ch[0].Finding.ID != "check-test" {
+	if ch, _ := b.CheckFailed(1, f); len(ch) != 1 || ch[0].Kind != Raised || ch[0].Finding.ID != "check-test" {
 		t.Fatalf("first failure: %+v", ch)
 	}
 	f.Claim, f.Location = "newer output", "logs/b-2-test.log:1"
-	if ch := b.CheckFailed(2, f); len(ch) != 0 {
+	if ch, _ := b.CheckFailed(2, f); len(ch) != 0 {
 		t.Errorf("a failure that goes on is not a new finding: %+v", ch)
 	}
 	if got := b.Open(); len(got) != 1 || got[0].Claim != "newer output" || got[0].Location != "logs/b-2-test.log:1" {
@@ -41,17 +42,17 @@ func TestACheckThatKeepsFailingKeepsOneFinding(t *testing.T) {
 func TestACheckClosesItsFindingOnlyWhenItPasses(t *testing.T) {
 	var b Book
 	b.CheckFailed(1, finding("check-test", "test", gungnir.SeverityBlocker))
-	if ch := b.CheckPassed(2, "check-vet", "x"); len(ch) != 0 {
+	if ch, _ := b.CheckPassed(2, "vet", "check-vet", "x"); len(ch) != 0 {
 		t.Errorf("a check with no finding closed something: %+v", ch)
 	}
-	ch := b.CheckPassed(3, "check-test", "check test: exit 0 (logs/b-3-test.log)")
+	ch, _ := b.CheckPassed(3, "test", "check-test", "check test: exit 0 (logs/b-3-test.log)")
 	if len(ch) != 1 || ch[0].Kind != Closed || ch[0].Attempts != 3 || ch[0].Finding.Status != gungnir.FindingFixed || ch[0].Finding.Proof == "" {
 		t.Fatalf("CheckPassed() = %+v; want a close after 3 attempts with proof", ch)
 	}
 	if len(b.Open()) != 0 || len(b.Blocking()) != 0 {
 		t.Errorf("the book still holds %v", ids(b.Open()))
 	}
-	if ch := b.CheckPassed(4, "check-test", "again"); len(ch) != 0 {
+	if ch, _ := b.CheckPassed(4, "test", "check-test", "again"); len(ch) != 0 {
 		t.Errorf("a closed finding closed again: %+v", ch)
 	}
 }
@@ -60,8 +61,8 @@ func TestAClosedFindingThatComesBackIsReopenedAndCounted(t *testing.T) {
 	var b Book
 	f := finding("check-test", "test", gungnir.SeverityBlocker)
 	b.CheckFailed(1, f)
-	b.CheckPassed(2, f.ID, "exit 0")
-	ch := b.CheckFailed(3, f)
+	b.CheckPassed(2, "test", f.ID, "exit 0")
+	ch, _ := b.CheckFailed(3, f)
 	if len(ch) != 1 || ch[0].Kind != Reopened || ch[0].Reopens != 1 {
 		t.Fatalf("CheckFailed() = %+v; want a reopen", ch)
 	}
@@ -69,7 +70,7 @@ func TestAClosedFindingThatComesBackIsReopenedAndCounted(t *testing.T) {
 	if r.Status != gungnir.FindingOpen || r.Closed != 0 || r.Reopens != 1 || r.Raised != 1 {
 		t.Errorf("record = %+v", r)
 	}
-	ch = b.CheckPassed(5, f.ID, "exit 0")
+	ch, _ = b.CheckPassed(5, "test", f.ID, "exit 0")
 	if len(ch) != 1 || ch[0].Attempts != 5 || ch[0].Reopens != 1 {
 		t.Errorf("CheckPassed() = %+v; want it closed after 5 attempts, having reopened once", ch)
 	}
@@ -97,7 +98,7 @@ func TestOpenFindingsComeWorstFirstInAStableOrder(t *testing.T) {
 func TestABookSurvivesARoundTripThroughRunJSON(t *testing.T) {
 	var b Book
 	b.CheckFailed(1, finding("check-test", "test", gungnir.SeverityBlocker))
-	b.CheckPassed(2, "check-test", "exit 0")
+	b.CheckPassed(2, "test", "check-test", "exit 0")
 	b.CheckFailed(3, finding("check-test", "test", gungnir.SeverityBlocker))
 	raw, err := json.Marshal(b)
 	if err != nil {
@@ -113,5 +114,22 @@ func TestABookSurvivesARoundTripThroughRunJSON(t *testing.T) {
 	}
 	if raw2, _ := json.Marshal(back); string(raw2) != string(raw) {
 		t.Errorf("the encoding is not stable:\n%s\n%s", raw, raw2)
+	}
+}
+
+func TestACheckNeverTouchesAFindingAnotherSourceRaised(t *testing.T) {
+	var b Book
+	b.put(finding("check-unit", "spec", gungnir.SeverityBlocker), 1) // a state from before the reviewer ids were reserved
+	if ch, err := b.CheckPassed(2, "unit", "check-unit", "exit 0"); len(ch) != 0 || !errors.As(err, new(*ConflictError)) {
+		t.Errorf("a check pass on a reviewer's finding = %+v, %v; want a conflict and no change", ch, err)
+	}
+	if r := b.Records["check-unit"]; r.Status != gungnir.FindingOpen || r.Source != "spec" {
+		t.Errorf("record = %+v; the reviewer's finding must stay open and its own", r)
+	}
+	if ch, err := b.CheckFailed(3, finding("check-unit", "unit", gungnir.SeverityBlocker)); len(ch) != 0 || !errors.As(err, new(*ConflictError)) {
+		t.Errorf("a check failure on a reviewer's finding = %+v, %v; want a conflict and no change", ch, err)
+	}
+	if r := b.Records["check-unit"]; r.Source != "spec" || r.Claim != "claim of check-unit" {
+		t.Errorf("record = %+v; a check failure took the reviewer's finding over", r)
 	}
 }
