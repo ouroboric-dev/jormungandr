@@ -165,12 +165,16 @@ func ladder(ctx context.Context, cfg Config, st *State, steps Steps) (out Outcom
 			return Outcome{}, true, err
 		}
 		var changes []Change
+		var cerr error
 		if co.Passed {
 			passed = append(passed, name)
-			changes = st.Book.CheckPassed(st.Attempt, co.FindingID, co.Proof)
+			changes, cerr = st.Book.CheckPassed(st.Attempt, name, co.FindingID, co.Proof)
 		} else {
 			clear = false
-			changes = st.Book.CheckFailed(st.Attempt, co.Finding)
+			changes, cerr = st.Book.CheckFailed(st.Attempt, co.Finding)
+		}
+		if cerr != nil {
+			return Outcome{}, true, cerr
 		}
 		// Saved with each rung, so a stop in the middle of the ladder repeats no line of the ledger.
 		if err := recorded(st, steps, changes); err != nil {

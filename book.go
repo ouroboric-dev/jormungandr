@@ -2,6 +2,7 @@ package jormungandr
 
 import (
 	"cmp"
+	"fmt"
 	"slices"
 
 	"github.com/ouroboric-dev/gungnir"
@@ -115,31 +116,57 @@ func (b *Book) All() []Record {
 	return out
 }
 
+// CheckPrefix starts the id of every finding a check raises: check-<name>. A reviewer's finding can't
+// use it, so the two sources never share an id.
+const CheckPrefix = "check-"
+
+// ConflictError means a check met a finding of another source under its own id. The book is left as it
+// was: a check never closes, reopens or takes over a finding it did not raise.
+type ConflictError struct {
+	Check string
+	ID    string
+	Owner string
+}
+
+func (e *ConflictError) Error() string {
+	return fmt.Sprintf("check %s: finding %s belongs to %s", e.Check, e.ID, e.Owner)
+}
+
 // CheckFailed records that a check did not pass on this attempt. The same check keeps the same
-// finding; its claim and location follow the latest output. A finding that had closed is reopened.
-func (b *Book) CheckFailed(attempt int, f gungnir.Finding) []Change {
+// finding; its claim and location follow the latest output. A finding that had closed is reopened. If
+// the id belongs to another source, nothing changes and the error is a *ConflictError.
+func (b *Book) CheckFailed(attempt int, f gungnir.Finding) ([]Change, error) {
 	r, ok := b.Records[f.ID]
 	switch {
 	case !ok:
 		b.put(f, attempt)
-		return []Change{{Kind: Raised, Finding: f}}
+		return []Change{{Kind: Raised, Finding: f}}, nil
+	case r.Source != f.Source:
+		return nil, &ConflictError{Check: f.Source, ID: f.ID, Owner: r.Source}
 	case !r.isOpen():
 		r.Reopens++
 		r.Closed = 0
 		r.Finding = f
-		return []Change{{Kind: Reopened, Finding: f, Reopens: r.Reopens}}
+		return []Change{{Kind: Reopened, Finding: f, Reopens: r.Reopens}}, nil
 	}
 	r.Finding = f
-	return nil
+	return nil, nil
 }
 
-// CheckPassed closes the finding a check raised earlier, with proof that the check ran and passed. A
-// check that never failed has nothing to close.
-func (b *Book) CheckPassed(attempt int, id, proof string) []Change {
+// CheckPassed closes the finding the check raised earlier, with proof that the check ran and passed. A
+// check that never failed has nothing to close. If the id belongs to another source, nothing changes
+// and the error is a *ConflictError.
+func (b *Book) CheckPassed(attempt int, check, id, proof string) ([]Change, error) {
 	r, ok := b.Records[id]
-	if !ok || !r.isOpen() {
-		return nil
+	if !ok {
+		return nil, nil
+	}
+	if r.Source != check {
+		return nil, &ConflictError{Check: check, ID: id, Owner: r.Source}
+	}
+	if !r.isOpen() {
+		return nil, nil
 	}
 	r.Status, r.Proof, r.Closed = gungnir.FindingFixed, proof, attempt
-	return []Change{{Kind: Closed, Finding: r.Finding, Attempts: r.Attempts(), Reopens: r.Reopens}}
+	return []Change{{Kind: Closed, Finding: r.Finding, Attempts: r.Attempts(), Reopens: r.Reopens}}, nil
 }

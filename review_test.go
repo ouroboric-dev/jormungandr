@@ -128,3 +128,15 @@ func TestAReviewerMayRewordAnOpenFindingButNotItsIdentity(t *testing.T) {
 		t.Errorf("finding = %+v", got)
 	}
 }
+
+func TestAReviewerCannotOpenAFindingInTheCheckNamespace(t *testing.T) {
+	var b Book
+	_, err := b.Review(1, "spec", passed, report(finding("check-unit", "spec", gungnir.SeverityBlocker)))
+	var re *ReportError
+	if !errors.As(err, &re) {
+		t.Fatalf("Review() error = %v; want a *ReportError", err)
+	}
+	if len(b.Records) != 0 {
+		t.Errorf("a refused report changed the book: %v", ids(b.Open()))
+	}
+}
