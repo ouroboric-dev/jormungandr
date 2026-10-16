@@ -6,6 +6,11 @@ Part of [Yggdrasil](https://github.com/ouroboric-dev/yggdrasil), the software fa
 [Ouroboric](https://github.com/ouroboric-dev/ouroboric). Work on it from the Yggdrasil umbrella,
 which holds every component as a submodule and builds them together through `go.work`.
 
+## What it is
+
+A Go package, `github.com/ouroboric-dev/jormungandr`. Odin calls `jormungandr.Run` for every loop node
+of a graph, and `Retrier.Do` for every agent session.
+
 ## Build and test
 
 ```bash
