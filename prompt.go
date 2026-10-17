@@ -38,6 +38,18 @@ func Feedback(open []gungnir.Finding, lastFailure, guidance string) string {
 	return b.String()
 }
 
+// Refusal is the text added to an implementer's prompt when a step after the loop refused its work, such
+// as the merge gate (spec §4.5): what the step said, so the attempt can fix it. It is empty for no
+// refusal.
+func Refusal(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	return "## Refused after your work passed\n\nYour work passed its checks and reviewers, and then a later step refused it. " +
+		"Fix what it says. Do not say it is fixed: the step looks again after your work and decides.\n\n" + text + "\n\n"
+}
+
 // ReportFormat explains to a reviewer how to answer (spec §4.6). Its answer is read by a program, and
 // anything that doesn't parse stops the loop.
 const ReportFormat = `Answer with one JSON document and nothing else, not even a sentence before or after it:

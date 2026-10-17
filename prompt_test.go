@@ -61,3 +61,15 @@ func TestTheReportFormatTheReviewerIsGivenIsTheOneParseReportReads(t *testing.T)
 		t.Errorf("the example in ReportFormat does not parse: %v\n%s", err, example)
 	}
 }
+
+func TestARefusalGoesIntoTheNextAttemptsPrompt(t *testing.T) {
+	got := Refusal("merge gate refused (conflict): CONFLICT in api/auth.go")
+	for _, want := range []string{"## Refused after your work passed", "merge gate refused (conflict)", "CONFLICT in api/auth.go", "Do not say"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Refusal() lacks %q:\n%s", want, got)
+		}
+	}
+	if Refusal("  \n") != "" {
+		t.Error("an empty refusal says something")
+	}
+}
