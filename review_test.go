@@ -140,3 +140,28 @@ func TestAReviewerCannotOpenAFindingInTheCheckNamespace(t *testing.T) {
 		t.Errorf("a refused report changed the book: %v", ids(b.Open()))
 	}
 }
+
+func TestAnOpenFindingKeepsItsHighestSeverity(t *testing.T) {
+	var b Book
+	f := finding("spec-1", "spec", gungnir.SeverityBlocker)
+	b.Review(1, "spec", passed, report(f))
+	lowered := f
+	lowered.Severity, lowered.Claim = gungnir.SeverityMinor, "reworded"
+	if _, err := b.Review(2, "spec", passed, report(lowered)); err != nil {
+		t.Fatalf("Review() = %v", err)
+	}
+	got := b.Blocking()
+	if len(got) != 1 || got[0].ID != "spec-1" || got[0].Severity != gungnir.SeverityBlocker || got[0].Claim != "reworded" {
+		t.Errorf("Blocking() = %+v; a blocker reported again as minor must stay a blocker, with the new wording", got)
+	}
+
+	var c Book
+	m := finding("spec-2", "spec", gungnir.SeverityMinor)
+	c.Review(1, "spec", passed, report(m))
+	raised := m
+	raised.Severity = gungnir.SeverityBlocker
+	c.Review(2, "spec", passed, report(raised))
+	if got := ids(c.Blocking()); len(got) != 1 || got[0] != "spec-2" {
+		t.Errorf("Blocking() = %v; a minor raised to a blocker blocks", got)
+	}
+}

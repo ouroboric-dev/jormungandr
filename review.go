@@ -44,7 +44,8 @@ func proves(proof string, passed []string) bool {
 //   - every finding the reviewer still held open is in the report, so none disappears unmentioned;
 //   - a finding closes (status fixed) only with proof: a file:line and the name of a check that passed;
 //   - a finding that is not open can't be closed, and a new finding can't be born closed;
-//   - a closed finding reported open again is reopened.
+//   - a closed finding reported open again is reopened;
+//   - an open finding's severity never goes down: it keeps the highest the reviewer has reported.
 //
 // A report that breaks a rule changes nothing and is a *ReportError.
 func (b *Book) Review(attempt int, reviewer string, passed []string, report gungnir.Report) ([]Change, error) {
@@ -88,6 +89,9 @@ func (b *Book) Review(attempt int, reviewer string, passed []string, report gung
 			r.Closed, r.Finding = 0, f
 			changes = append(changes, Change{Kind: Reopened, Finding: f, Reopens: r.Reopens})
 		default:
+			if severityRank(f.Severity) > severityRank(r.Severity) {
+				f.Severity = r.Severity
+			}
 			r.Finding = f
 		}
 	}
