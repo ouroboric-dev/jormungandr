@@ -51,6 +51,21 @@ func (s *State) Extend(cfg Config) {
 	s.Unreadable = nil
 }
 
+// Reopen sends a loop back for another set of attempts after something downstream refused its work, such
+// as the merge gate (spec §4.5). A loop that passed starts a new attempt, with attempts up to the full
+// set again; one that has not finished is extended as an operator's rejection extends it. The findings
+// stay, open or closed, as they were.
+func (s *State) Reopen(cfg Config) {
+	if !s.Passed {
+		s.Extend(cfg)
+		return
+	}
+	s.Passed = false
+	s.Attempt++
+	s.Phase, s.Failure, s.Unreadable = PhaseImplement, "", nil
+	s.Limit = max(s.Limit, s.Attempt+cfg.Attempts-1)
+}
+
 // Input is what an implementer attempt needs besides its prompt.
 type Input struct {
 	Open        []gungnir.Finding // the findings to fix
