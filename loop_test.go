@@ -364,3 +364,17 @@ func TestABlockingFindingFromASourceThatNoLongerRunsKeepsTheLoopFromPassing(t *t
 		t.Errorf("Run() = %+v; a loop passed with a blocking finding open", out)
 	}
 }
+
+func TestABlockerReportedAgainAsMinorDoesNotLetTheLoopPass(t *testing.T) {
+	blocker := finding("spec-1", "spec", gungnir.SeverityBlocker)
+	lowered := blocker
+	lowered.Severity = gungnir.SeverityMinor
+	f := &fakeSteps{review: map[string][]answer{
+		"spec": {{text: rep(blocker)}, {text: rep(lowered)}, {text: rep(lowered)}},
+	}}
+	st := NewState(cfg)
+	out := run(t, st, f)
+	if out.Kind == Passed || st.Passed {
+		t.Fatalf("Run() = %+v; a blocker lowered to minor with no proof must not pass", out)
+	}
+}
