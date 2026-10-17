@@ -24,6 +24,9 @@ The loop: build, check and fix with attempts, backoff, budgets, feedback and esc
   backoff and is not a loop attempt, a used-up quota pauses the run, an infrastructure failure stops
   it, and anything else counts as a loop attempt (spec §12).
 - Asks the budget before every session, so none starts over a cap (spec §7.4).
+- Reopens a loop that passed when something after it refuses its work, such as the merge gate (spec
+  §4.5): `Reopen` starts another attempt with the findings as they were, and `Refusal` is the text the
+  next implementer prompt carries.
 
 ## How a loop runs
 

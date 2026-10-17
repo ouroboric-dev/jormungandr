@@ -2,7 +2,7 @@ module github.com/ouroboric-dev/jormungandr
 
 go 1.26
 
-require github.com/ouroboric-dev/gungnir v0.0.0-20261016221231-d32b9b24c1fb
+require github.com/ouroboric-dev/gungnir v0.0.0-20261017105759-a550fbc79f80
 
 require (
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
