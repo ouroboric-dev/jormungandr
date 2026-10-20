@@ -73,3 +73,12 @@ func TestARefusalGoesIntoTheNextAttemptsPrompt(t *testing.T) {
 		t.Error("an empty refusal says something")
 	}
 }
+
+func TestTheReportFormatAllowsProseBeforeTheReportAndNothingAfterIt(t *testing.T) {
+	if strings.Contains(ReportFormat, "nothing else") || strings.Contains(ReportFormat, "not even a sentence") {
+		t.Errorf("ReportFormat still forbids prose before the report:\n%s", ReportFormat)
+	}
+	if !strings.Contains(ReportFormat, "end your answer with the document; nothing after it") {
+		t.Errorf("ReportFormat does not say the report ends the answer:\n%s", ReportFormat)
+	}
+}
