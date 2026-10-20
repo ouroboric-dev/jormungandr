@@ -52,7 +52,7 @@ func Refusal(text string) string {
 
 // ReportFormat explains to a reviewer how to answer (spec §4.6). Its answer is read by a program, and
 // anything that doesn't parse stops the loop.
-const ReportFormat = `Answer with one JSON document and nothing else, not even a sentence before or after it:
+const ReportFormat = `Answer with one JSON document: end your answer with the document; nothing after it. Any text before it is ignored. The document, bare or in one code fence:
 
 {"findings": [ {"id": "...", "source": "<your id>", "severity": "blocker|major|minor", "location": "path/to/file:LINE", "claim": "what is wrong", "status": "open"} ]}
 
