@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/ouroboric-dev/gungnir"
 )
@@ -15,6 +16,11 @@ type Record struct {
 	Raised  int `json:"raised"`            // the attempt the finding was first reported
 	Closed  int `json:"closed,omitempty"`  // the attempt its source confirmed the fix; 0 while it is open
 	Reopens int `json:"reopens,omitempty"` // how many times it was reported again after it closed
+	// OverruledBy names the check whose pass settled the implementer's dispute; empty unless the finding is
+	// overruled. CheckFailedSince is true once that check failed in a later attempt: from then on a reviewer's
+	// repeat of the claim reopens the finding.
+	OverruledBy      string `json:"overruled_by,omitempty"`
+	CheckFailedSince bool   `json:"check_failed_since,omitempty"`
 }
 
 // Attempts is how many attempts the finding took to close, counting the one that raised it and the one
@@ -26,7 +32,9 @@ func (r Record) Attempts() int {
 	return r.Closed - r.Raised + 1
 }
 
-func (r Record) isOpen() bool { return r.Status != gungnir.FindingFixed }
+func (r Record) isOpen() bool {
+	return r.Status != gungnir.FindingFixed && r.Status != gungnir.FindingOverruled
+}
 
 // Book holds a loop's findings by id. Its only way to close a finding is the source's confirmation:
 // a check that passes, or a reviewer's report with proof. An implementer's claim never closes one.
@@ -41,6 +49,11 @@ const (
 	Raised   ChangeKind = "raised"   // first reported
 	Closed   ChangeKind = "closed"   // its source confirmed the fix, with proof
 	Reopened ChangeKind = "reopened" // reported again after it closed
+	// Overruled: the implementer's dispute held, a named check passed and printed the test (the finding_overruled event).
+	Overruled ChangeKind = "overruled"
+	// DisputeIgnored: a dispute, or the document that held it, could not be used; Reason says why, and begins
+	// "dispute ignored: ". It changes no finding.
+	DisputeIgnored ChangeKind = "dispute-ignored"
 )
 
 // Change is one change to the book, for a ledger line (spec §10.1).
@@ -51,6 +64,9 @@ type Change struct {
 	// back) and Reopens on a Reopened one.
 	Attempts int
 	Reopens  int
+	// Check is the check that settled an Overruled change; Reason is the why of a DisputeIgnored one.
+	Check  string
+	Reason string
 }
 
 func (b *Book) put(f gungnir.Finding, attempt int) *Record {
@@ -136,6 +152,11 @@ func (e *ConflictError) Error() string {
 // finding; its claim and location follow the latest output. A finding that had closed is reopened. If
 // the id belongs to another source, nothing changes and the error is a *ConflictError.
 func (b *Book) CheckFailed(attempt int, f gungnir.Finding) ([]Change, error) {
+	for _, o := range b.Records {
+		if o.Status == gungnir.FindingOverruled && o.OverruledBy == f.Source && attempt > o.Closed {
+			o.CheckFailedSince = true // the check that settled the dispute no longer passes
+		}
+	}
 	r, ok := b.Records[f.ID]
 	switch {
 	case !ok:
@@ -169,4 +190,27 @@ func (b *Book) CheckPassed(attempt int, check, id, proof string) ([]Change, erro
 	}
 	r.Status, r.Proof, r.Closed = gungnir.FindingFixed, proof, attempt
 	return []Change{{Kind: Closed, Finding: r.Finding, Attempts: r.Attempts(), Reopens: r.Reopens}}, nil
+}
+
+// Overrule applies a dispute that holds: the finding closes as overruled, with the implementer's evidence and
+// the proof of the check run (what Dispute returned) as its proof, and the book remembers which check settled
+// it. Only an open finding of a reviewer can be overruled: a check's finding is deterministic and a person
+// fixes the check in the realm. Nothing changes on an error.
+func (b *Book) Overrule(attempt int, d gungnir.Dispute, checkProof string) ([]Change, error) {
+	r, ok := b.Records[d.ID]
+	switch {
+	case !ok:
+		return nil, fmt.Errorf("finding %s is not in the book", d.ID)
+	case strings.HasPrefix(d.ID, CheckPrefix):
+		return nil, fmt.Errorf("finding %s was raised by a check, which a dispute can't overrule", d.ID)
+	case !r.isOpen():
+		return nil, fmt.Errorf("finding %s is not open", d.ID)
+	}
+	proof := fmt.Sprintf("Implementer's evidence: %s\nCheck %s ran and passed in attempt %d: %s", d.Evidence, d.Check, attempt, strings.TrimSpace(checkProof))
+	if runes := []rune(proof); len(runes) > gungnir.MaxProof {
+		proof = string(runes[:gungnir.MaxProof])
+	}
+	r.Status, r.Proof, r.Closed = gungnir.FindingOverruled, proof, attempt
+	r.OverruledBy, r.CheckFailedSince = d.Check, false
+	return []Change{{Kind: Overruled, Finding: r.Finding, Check: d.Check, Attempts: r.Attempts(), Reopens: r.Reopens}}, nil
 }

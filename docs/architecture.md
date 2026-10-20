@@ -23,6 +23,11 @@ The loop: build, check and fix with attempts, backoff, budgets, feedback and esc
 - Decides what a failed session means (`Classify`, `Retrier`): a transient failure is retried with a
   backoff and is not a loop attempt, a used-up quota pauses the run, an infrastructure failure stops
   it, and anything else counts as a loop attempt (spec §12).
+- Settles a disputed finding with a check (`ReadDisputes`, `Steps.Dispute`): the implementer's final answer may
+  end with a `disputes` document naming a check of the loop and a test id. After the checks ran, a dispute
+  that holds overrules the finding (`Book.Overrule`); one that does not leaves it open and the next prompt says
+  why (`FeedbackWith`); one no check can settle escalates with `finding-disputed`, with both sides. A reviewer's
+  repeat of an overruled claim reopens it only at another location or after the overruling check failed.
 - Asks the budget before every session, so none starts over a cap (spec §7.4).
 - Reopens a loop that passed when something after it refuses its work, such as the merge gate (spec
   §4.5): `Reopen` starts another attempt with the findings as they were, and `Refusal` is the text the

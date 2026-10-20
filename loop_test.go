@@ -14,13 +14,15 @@ import (
 
 // fakeSteps plays the steps of a loop from lists: each call takes the next entry for its kind.
 type fakeSteps struct {
-	implement []error             // per implementer session; nil is a success
-	check     map[string][]bool   // per check: passes, per attempt that reaches it
-	review    map[string][]answer // per reviewer: its answers, in order
-	calls     []string            // what ran, in order
-	inputs    []Input             // what each implementer session was given
-	changes   []Change            // everything recorded
-	saved     []State             // a copy of the state at every save
+	implement []error                   // per implementer session; nil is a success
+	answers   []string                  // per implementer session: its final answer
+	verdicts  map[string]DisputeOutcome // per finding id: how Dispute decides it; no entry is "does not hold"
+	check     map[string][]bool         // per check: passes, per attempt that reaches it
+	review    map[string][]answer       // per reviewer: its answers, in order
+	calls     []string                  // what ran, in order
+	inputs    []Input                   // what each implementer session was given
+	changes   []Change                  // everything recorded
+	saved     []State                   // a copy of the state at every save
 	saveErr   error
 	ni        int
 	nc        map[string]int
@@ -32,15 +34,27 @@ type answer struct {
 	err  error
 }
 
-func (f *fakeSteps) Implement(_ context.Context, attempt int, in Input) error {
+func (f *fakeSteps) Implement(_ context.Context, attempt int, in Input) (string, error) {
 	f.calls = append(f.calls, fmt.Sprintf("implement %d", attempt))
 	f.inputs = append(f.inputs, in)
 	var err error
 	if f.ni < len(f.implement) {
 		err = f.implement[f.ni]
 	}
+	var out string
+	if f.ni < len(f.answers) {
+		out = f.answers[f.ni]
+	}
 	f.ni++
-	return err
+	return out, err
+}
+
+func (f *fakeSteps) Dispute(_ context.Context, attempt int, d gungnir.Dispute) (DisputeOutcome, error) {
+	f.calls = append(f.calls, fmt.Sprintf("dispute %d %s", attempt, d.ID))
+	if v, ok := f.verdicts[d.ID]; ok {
+		return v, nil
+	}
+	return DisputeOutcome{Verdict: DoesNotHold, Reason: "check " + d.Check + " did not print " + d.Test}, nil
 }
 
 func (f *fakeSteps) Check(_ context.Context, attempt int, name string) (CheckOutcome, error) {

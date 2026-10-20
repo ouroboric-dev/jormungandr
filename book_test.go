@@ -133,3 +133,88 @@ func TestACheckNeverTouchesAFindingAnotherSourceRaised(t *testing.T) {
 		t.Errorf("record = %+v; a check failure took the reviewer's finding over", r)
 	}
 }
+
+func overruledBook(t *testing.T) *Book {
+	t.Helper()
+	var b Book
+	b.Review(1, "spec", passed, report(findIndexBlocker()))
+	ch, err := b.Overrule(2, findIndexDispute, "check test passed in attempt 2")
+	if err != nil || len(ch) != 1 || ch[0].Kind != Overruled {
+		t.Fatalf("Overrule() = %+v, %v", ch, err)
+	}
+	return &b
+}
+
+func TestAnOverruledFindingNoLongerBlocksAndIsNotAskedOfItsReviewer(t *testing.T) {
+	b := overruledBook(t)
+	if len(b.Open()) != 0 || len(b.Blocking()) != 0 || len(b.OpenFrom("spec")) != 0 {
+		t.Errorf("open %v", ids(b.Open()))
+	}
+	r := b.Records["spec-1"]
+	if r.Status != gungnir.FindingOverruled || r.OverruledBy != "test" || r.Closed != 2 || r.Attempts() != 2 {
+		t.Errorf("record = %+v", r)
+	}
+	// An empty report is fine: an overruled finding is not "still open and not mentioned".
+	if ch, err := b.Review(3, "spec", passed, report()); err != nil || len(ch) != 0 {
+		t.Errorf("Review() = %+v, %v", ch, err)
+	}
+}
+
+func TestAReviewerRepeatingAnOverruledFindingDoesNotReopenItUnlessThereIsProof(t *testing.T) {
+	same := findIndexBlocker()
+	b := overruledBook(t)
+	if ch, err := b.Review(3, "spec", passed, report(same)); err != nil || len(ch) != 0 || len(b.Blocking()) != 0 {
+		t.Errorf("a repeat at the same place: %+v, %v, blocking %v", ch, err, ids(b.Blocking()))
+	}
+	moved := same
+	moved.Location = "web/list.js:40"
+	ch, err := b.Review(3, "spec", passed, report(moved))
+	if err != nil || len(ch) != 1 || ch[0].Kind != Reopened || ch[0].Reopens != 1 || len(b.Blocking()) != 1 {
+		t.Fatalf("a repeat at another place: %+v, %v", ch, err)
+	}
+	if r := b.Records["spec-1"]; r.OverruledBy != "" || r.Closed != 0 || r.Status != gungnir.FindingOpen {
+		t.Errorf("record = %+v", r)
+	}
+
+	// The check that overruled it fails in a later attempt: the repeat reopens it.
+	b = overruledBook(t)
+	b.CheckFailed(3, finding("check-test", "test", gungnir.SeverityBlocker))
+	if ch, err := b.Review(3, "spec", passed, report(same)); err != nil || len(ch) != 1 || ch[0].Kind != Reopened {
+		t.Errorf("after the check failed: %+v, %v", ch, err)
+	}
+	// Another check failing changes nothing.
+	b = overruledBook(t)
+	b.CheckFailed(3, finding("check-vet", "vet", gungnir.SeverityBlocker))
+	if ch, err := b.Review(3, "spec", passed, report(same)); err != nil || len(ch) != 0 {
+		t.Errorf("after another check failed: %+v, %v", ch, err)
+	}
+}
+
+func TestAReviewerCannotOverruleOrCloseAnOverruledFinding(t *testing.T) {
+	b := overruledBook(t)
+	f := findIndexBlocker()
+	f.Status, f.Proof = gungnir.FindingOverruled, "web/list.js:12"
+	if _, err := b.Review(3, "spec", passed, report(f)); err == nil {
+		t.Error("a reviewer overruled a finding")
+	}
+	if ch, err := b.Review(3, "spec", passed, report(fixed(findIndexBlocker(), "web/list.js:12; check test passed"))); err != nil || len(ch) != 0 {
+		t.Errorf("a fixed report of an overruled finding: %+v, %v", ch, err)
+	}
+}
+
+func TestOnlyAnOpenFindingOfAReviewerCanBeOverruled(t *testing.T) {
+	var b Book
+	b.CheckFailed(1, finding("check-test", "test", gungnir.SeverityBlocker))
+	b.Review(1, "spec", passed, report(findIndexBlocker()))
+	for _, id := range []string{"check-test", "nope"} {
+		d := findIndexDispute
+		d.ID = id
+		if ch, err := b.Overrule(2, d, "p"); err == nil || len(ch) != 0 {
+			t.Errorf("Overrule(%s) = %+v, %v", id, ch, err)
+		}
+	}
+	b.Overrule(2, findIndexDispute, "p")
+	if _, err := b.Overrule(3, findIndexDispute, "p"); err == nil {
+		t.Error("an overruled finding was overruled again")
+	}
+}
