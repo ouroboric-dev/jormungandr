@@ -45,6 +45,9 @@ func proves(proof string, passed []string) bool {
 //   - a finding closes (status fixed) only with proof: a file:line and the name of a check that passed;
 //   - a finding that is not open can't be closed, and a new finding can't be born closed;
 //   - a closed finding reported open again is reopened;
+//   - an overruled finding (the implementer's dispute held) reported open again stays overruled, unless the
+//     report puts it at another location or the check that overruled it failed in a later attempt: then it
+//     reopens, and counts as a reopen;
 //   - an open finding's severity never goes down: it keeps the highest the reviewer has reported.
 //
 // A report that breaks a rule changes nothing and is a *ReportError.
@@ -63,6 +66,10 @@ func (b *Book) Review(attempt int, reviewer string, passed []string, report gung
 			return bad("finding %s belongs to %s", f.ID, old.Source)
 		case strings.HasPrefix(f.ID, CheckPrefix):
 			return bad("finding %s uses the id space of the checks (%s...)", f.ID, CheckPrefix)
+		case f.Status == gungnir.FindingOverruled:
+			return bad("finding %s is overruled in the report; only a dispute that holds overrules a finding", f.ID)
+		case f.Status == gungnir.FindingFixed && known && old.Status == gungnir.FindingOverruled:
+			// Not an error: the reviewer was not told of it. Nothing changes (see below).
 		case f.Status == gungnir.FindingFixed && (!known || !old.isOpen()):
 			return bad("finding %s is closed in the report but was not open", f.ID)
 		case f.Status == gungnir.FindingFixed && !proves(f.Proof, passed):
@@ -81,6 +88,12 @@ func (b *Book) Review(attempt int, reviewer string, passed []string, report gung
 		case !known:
 			b.put(f, attempt)
 			changes = append(changes, Change{Kind: Raised, Finding: f})
+		case r.Status == gungnir.FindingOverruled:
+			if f.Status != gungnir.FindingFixed && (f.Location != r.Location || r.CheckFailedSince) {
+				r.Reopens++
+				r.Closed, r.OverruledBy, r.CheckFailedSince, r.Finding = 0, "", false, f
+				changes = append(changes, Change{Kind: Reopened, Finding: f, Reopens: r.Reopens})
+			}
 		case f.Status == gungnir.FindingFixed:
 			r.Finding, r.Closed = f, attempt
 			changes = append(changes, Change{Kind: Closed, Finding: f, Attempts: r.Attempts(), Reopens: r.Reopens})

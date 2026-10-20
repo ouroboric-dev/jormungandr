@@ -37,6 +37,11 @@ type State struct {
 	Book       Book           `json:"book"`                 // the findings, open and closed
 	Failure    string         `json:"failure,omitempty"`    // how the last implementer session failed, for the next attempt
 	Unreadable map[string]int `json:"unreadable,omitempty"` // reviewer id: unreadable answers in a row
+	// Disputes are the implementer's disputes of this attempt that the ladder has not decided yet. Rejected
+	// are those that did not hold in the latest attempt that disputed: the next attempt is told, and a loop
+	// that runs out of attempts with one of them still open escalates as disputed.
+	Disputes []gungnir.Dispute `json:"disputes,omitempty"`
+	Rejected []Rejection       `json:"rejected,omitempty"`
 }
 
 // NewState starts a loop at attempt 1.
@@ -69,6 +74,7 @@ func (s *State) Reopen(cfg Config) {
 // Input is what an implementer attempt needs besides its prompt.
 type Input struct {
 	Open        []gungnir.Finding // the findings to fix
+	Rejected    []Rejection       // the implementer's disputes that did not hold last attempt, and why
 	LastFailure string            // how the last implementer session ended, when it failed
 }
 
@@ -84,8 +90,13 @@ type CheckOutcome struct {
 // cap or a quota returns a *gungnir.CapError or a *QuotaError; a session that failed as an agent does
 // returns an *AgentFailure; anything else is an error the loop passes on.
 type Steps interface {
-	// Implement runs one implementer session, fresh, and commits what it did. The attempt counts from 1.
-	Implement(ctx context.Context, attempt int, in Input) error
+	// Implement runs one implementer session, fresh, and commits what it did. The attempt counts from 1. It
+	// returns the implementer's final answer, where the loop looks for a disputes document.
+	Implement(ctx context.Context, attempt int, in Input) (string, error)
+	// Dispute decides one dispute after the attempt's checks ran: it holds when the named check ran and
+	// passed in this attempt and its output contains d.Test. A Holds outcome carries the proof (the check
+	// run); DoesNotHold carries the reason; Unsettleable says no check of the loop can settle it.
+	Dispute(ctx context.Context, attempt int, d gungnir.Dispute) (DisputeOutcome, error)
 	// Check runs one check of the ladder on the committed work.
 	Check(ctx context.Context, attempt int, name string) (CheckOutcome, error)
 	// Review runs one read-only reviewer and returns its whole answer. open is what it reported
@@ -110,6 +121,7 @@ const (
 // Reasons a loop escalates.
 const (
 	ReasonExhausted  = "attempts-exhausted"
+	ReasonDisputed   = "finding-disputed" // the implementer disputed a finding that no check settled
 	ReasonUnreadable = "reviewer-unreadable"
 )
 
@@ -139,17 +151,26 @@ func Run(ctx context.Context, cfg Config, st *State, steps Steps) (Outcome, erro
 		}
 		if st.Phase == PhaseImplement {
 			if st.Attempt > st.Limit {
+				if ids := disputedBlocking(st); len(ids) > 0 {
+					return escalate(st, ReasonDisputed, disputeDetail(st, ids))
+				}
 				return escalate(st, ReasonExhausted, exhausted(st))
 			}
 			if err := steps.Save(st); err != nil {
 				return Outcome{}, err
 			}
-			err := steps.Implement(ctx, st.Attempt, Input{Open: st.Book.Open(), LastFailure: st.Failure})
+			answer, err := steps.Implement(ctx, st.Attempt, Input{Open: st.Book.Open(), Rejected: st.Rejected, LastFailure: st.Failure})
 			var af *AgentFailure
 			switch {
 			case err == nil:
-				st.Failure, st.Phase = "", PhaseLadder
-				if err := steps.Save(st); err != nil {
+				// What this attempt disputes replaces what the last one did.
+				disputes, ignored := ReadDisputes(answer)
+				st.Failure, st.Phase, st.Disputes, st.Rejected = "", PhaseLadder, disputes, nil
+				var changes []Change
+				if ignored != "" {
+					changes = []Change{{Kind: DisputeIgnored, Reason: ignored}}
+				}
+				if err := recorded(st, steps, changes); err != nil {
 					return Outcome{}, err
 				}
 			case errors.As(err, &af):
@@ -198,6 +219,9 @@ func ladder(ctx context.Context, cfg Config, st *State, steps Steps) (out Outcom
 		if !co.Passed {
 			break // the ladder stops at the first rung that fails: the slower ones wait
 		}
+	}
+	if out, stop, err := settleDisputes(ctx, cfg, st, steps); err != nil || stop {
+		return out, true, err
 	}
 	for _, rv := range cfg.Reviewers {
 		if !clear {
