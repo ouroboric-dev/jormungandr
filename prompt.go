@@ -275,11 +275,11 @@ func (o *orderedProperties) UnmarshalJSON(data []byte) error {
 // reviewRules are what a reviewer needs to know about its findings besides their shape, which the schema holds.
 const reviewRules = `- "id" names the problem and stays the same every time you report it.
 - "location" is a file and a line, or a range such as path/to/file:10-20.
-- "status" is "open" for a problem you still see. Say "fixed" only for a problem listed below that you checked
-  is gone, and then add "proof": the file:line you read, and the name of one of the checks listed below
+- "status" is "open" for a problem you still see. Say "fixed" only for a problem listed in your input ` + "`open_findings`" + ` that you checked
+  is gone, and then add "proof": the file:line you read, and the name of one of the checks listed in your input ` + "`check_results`" + `
   that passed. A finding without both is refused.
 - A blocker or major finding of yours that the implementer disputed and a check settled is closed ("overruled"):
-  it is not in the list below. Report it again only with proof: a failing check, or a different location than
+  it is not in your input ` + "`open_findings`" + `. Report it again only with proof: a failing check, or a different location than
   before. A repeat with neither is ignored.
 - If you find nothing, answer with an empty list of findings.`
 
@@ -289,9 +289,9 @@ const reviewRules = `- "id" names the problem and stays the same every time you 
 // (WithDisputeFormat does not).
 const DisputeFormat = `## Disputing a finding
 
-If you believe a finding above is wrong, do not just say so, and do not change code to please it. Prove it with a test that one of this loop's checks runs, and put the dispute in the ` + "`disputes`" + ` field of your answer. Each dispute has four fields:
+If you believe a finding in your input ` + "`open_findings`" + ` is wrong, do not just say so, and do not change code to please it. Prove it with a test that one of this loop's checks runs, and put the dispute in the ` + "`disputes`" + ` field of your answer. Each dispute has four fields:
 
-- "id" is a finding listed above. You can't dispute a finding raised by a check: fix the work.
+- "id" is a finding listed in your input ` + "`open_findings`" + `. You can't dispute a finding raised by a check: fix the work.
 - "check" is the name of one of this loop's checks. It must run after your work.
 - "test" is the id of a test that check runs, as the check's result names it. The dispute holds when the named check runs in the attempt and its result lists the named test among the tests that passed. If the check does not run, still fails that test, or does not list it as passed, the dispute does not hold.
 - "evidence" says what the test showed and where in the code.

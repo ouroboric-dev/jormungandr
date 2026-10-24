@@ -245,10 +245,14 @@ func TestTheReviewRequestCarriesTheAnswerInstructionsAndTheRules(t *testing.T) {
 		if !strings.Contains(got, instructions(t, schema.ContractReview, viaSubmit)) {
 			t.Errorf("viaSubmit %v: no instructions:\n%s", viaSubmit, got)
 		}
-		for _, w := range []string{"Say \"fixed\" only", "proof"} {
+		for _, w := range []string{"Say \"fixed\" only", "proof", "listed in your input `open_findings`", "listed in your input `check_results`", "not in your input `open_findings`"} {
 			if !strings.Contains(got, w) {
 				t.Errorf("lacks %q:\n%s", w, got)
 			}
+		}
+		// The inputs come before the answer section, so no rule points below it.
+		if strings.Contains(reviewRules, "below") {
+			t.Errorf("the review rules point below, where the inputs are not:\n%s", reviewRules)
 		}
 	}
 }
