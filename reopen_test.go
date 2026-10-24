@@ -9,7 +9,7 @@ import (
 func TestALoopThatPassedIsReopenedWhenSomethingDownstreamRefusesItsWork(t *testing.T) {
 	st := NewState(cfg)
 	nit := gungnir.Finding{ID: "q-1", Source: "quality", Severity: gungnir.SeverityMinor, Location: "a.go:1", Claim: "a nit", Status: gungnir.FindingOpen}
-	f := &fakeSteps{review: map[string][]answer{"quality": {{text: rep(nit)}}}}
+	f := &fakeSteps{review: map[string][]answer{"quality": {{rev: rep(nit)}}}}
 	if out := run(t, st, f); out.Kind != Passed || out.Attempts != 1 {
 		t.Fatalf("the first run = %+v", out)
 	}
@@ -17,7 +17,7 @@ func TestALoopThatPassedIsReopenedWhenSomethingDownstreamRefusesItsWork(t *testi
 	if st.Passed || st.Attempt != 2 || st.Phase != PhaseImplement || st.Limit != 4 {
 		t.Fatalf("after Reopen: passed %v, attempt %d, phase %s, limit %d; want a new attempt 2 with attempts up to 4", st.Passed, st.Attempt, st.Phase, st.Limit)
 	}
-	again := &fakeSteps{review: map[string][]answer{"quality": {{text: rep(nit)}}}} // a reviewer must mention what it still holds open
+	again := &fakeSteps{review: map[string][]answer{"quality": {{rev: rep(nit)}}}} // a reviewer must mention what it still holds open
 	out := run(t, st, again)
 	if out.Kind != Passed || out.Attempts != 2 {
 		t.Errorf("the reopened loop = %+v; want a pass in attempt 2", out)

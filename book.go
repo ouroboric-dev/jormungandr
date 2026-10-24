@@ -16,9 +16,9 @@ type Record struct {
 	Raised  int `json:"raised"`            // the attempt the finding was first reported
 	Closed  int `json:"closed,omitempty"`  // the attempt its source confirmed the fix; 0 while it is open
 	Reopens int `json:"reopens,omitempty"` // how many times it was reported again after it closed
-	// OverruledBy names the check whose pass settled the implementer's dispute; empty unless the finding is
-	// overruled. CheckFailedSince is true once that check failed in a later attempt: from then on a reviewer's
-	// repeat of the claim reopens the finding.
+	// OverruledBy names the check that settled the implementer's dispute (its result listed the disputed test
+	// among the tests that passed); empty unless the finding is overruled. CheckFailedSince is true once that
+	// check failed in a later attempt: from then on a reviewer's repeat of the claim reopens the finding.
 	OverruledBy      string `json:"overruled_by,omitempty"`
 	CheckFailedSince bool   `json:"check_failed_since,omitempty"`
 }
@@ -49,7 +49,8 @@ const (
 	Raised   ChangeKind = "raised"   // first reported
 	Closed   ChangeKind = "closed"   // its source confirmed the fix, with proof
 	Reopened ChangeKind = "reopened" // reported again after it closed
-	// Overruled: the implementer's dispute held, a named check passed and printed the test (the finding_overruled event).
+	// Overruled: the implementer's dispute held: the named check listed the test among the tests that passed (the
+	// finding_overruled event).
 	Overruled ChangeKind = "overruled"
 	// DisputeIgnored: a dispute, or the document that held it, could not be used; Reason says why, and begins
 	// "dispute ignored: ". It changes no finding.
@@ -148,53 +149,78 @@ func (e *ConflictError) Error() string {
 	return fmt.Sprintf("check %s: finding %s belongs to %s", e.Check, e.ID, e.Owner)
 }
 
-// CheckFailed records that a check did not pass on this attempt. The same check keeps the same
-// finding; its claim and location follow the latest output. A finding that had closed is reopened. If
-// the id belongs to another source, nothing changes and the error is a *ConflictError.
-func (b *Book) CheckFailed(attempt int, f gungnir.Finding) ([]Change, error) {
+// CheckFailed records that a check did not pass on this attempt, with the findings it reports (one per
+// failure, built by gleipnir; the book takes them as given). A finding the book already holds keeps its
+// record and follows the latest claim and location; one that had closed is reopened; a new one is raised.
+// An open finding of the check that fs does not hold closes, fixed, with the proof that the check ran in this
+// attempt and no longer reports it. A check that failed reports at least one finding, and every finding is
+// its own and open: otherwise, or if an id belongs to another source, nothing changes and the error says why (a
+// *ConflictError for the id).
+func (b *Book) CheckFailed(attempt int, check string, fs []gungnir.Finding) ([]Change, error) {
+	if len(fs) == 0 {
+		return nil, fmt.Errorf("check %s failed and reported no finding", check)
+	}
+	for _, f := range fs {
+		if f.Source != check {
+			return nil, fmt.Errorf("check %s: finding %s has source %q", check, f.ID, f.Source)
+		}
+		if f.Status != gungnir.FindingOpen {
+			return nil, fmt.Errorf("check %s: finding %s is %s, but a failure is open", check, f.ID, f.Status)
+		}
+		if r, ok := b.Records[f.ID]; ok && r.Source != check {
+			return nil, &ConflictError{Check: check, ID: f.ID, Owner: r.Source}
+		}
+	}
 	for _, o := range b.Records {
-		if o.Status == gungnir.FindingOverruled && o.OverruledBy == f.Source && attempt > o.Closed {
+		if o.Status == gungnir.FindingOverruled && o.OverruledBy == check && attempt > o.Closed {
 			o.CheckFailedSince = true // the check that settled the dispute no longer passes
 		}
 	}
-	r, ok := b.Records[f.ID]
-	switch {
-	case !ok:
-		b.put(f, attempt)
-		return []Change{{Kind: Raised, Finding: f}}, nil
-	case r.Source != f.Source:
-		return nil, &ConflictError{Check: f.Source, ID: f.ID, Owner: r.Source}
-	case !r.isOpen():
-		r.Reopens++
-		r.Closed = 0
-		r.Finding = f
-		return []Change{{Kind: Reopened, Finding: f, Reopens: r.Reopens}}, nil
+	var changes []Change
+	reported := map[string]bool{}
+	for _, f := range fs {
+		reported[f.ID] = true
+		r, ok := b.Records[f.ID]
+		switch {
+		case !ok:
+			b.put(f, attempt)
+			changes = append(changes, Change{Kind: Raised, Finding: f})
+		case !r.isOpen():
+			r.Reopens++
+			r.Closed = 0
+			r.Finding = f
+			changes = append(changes, Change{Kind: Reopened, Finding: f, Reopens: r.Reopens})
+		default:
+			r.Finding = f
+		}
 	}
-	r.Finding = f
-	return nil, nil
+	proof := fmt.Sprintf("check %s ran in attempt %d and no longer reports it", check, attempt)
+	return append(changes, b.closeFrom(attempt, check, proof, func(id string) bool { return !reported[id] })...), nil
 }
 
-// CheckPassed closes the finding the check raised earlier, with proof that the check ran and passed. A
-// check that never failed has nothing to close. If the id belongs to another source, nothing changes
-// and the error is a *ConflictError.
-func (b *Book) CheckPassed(attempt int, check, id, proof string) ([]Change, error) {
-	r, ok := b.Records[id]
-	if !ok {
-		return nil, nil
+// CheckPassed closes every open finding the check raised, with proof that the check ran and passed. A check
+// that never failed has nothing to close. Findings of other sources are not touched, whatever their ids.
+func (b *Book) CheckPassed(attempt int, check, proof string) ([]Change, error) {
+	return b.closeFrom(attempt, check, proof, func(string) bool { return true }), nil
+}
+
+// closeFrom closes, fixed, the open findings of a check that pick accepts, by id.
+func (b *Book) closeFrom(attempt int, check, proof string, pick func(id string) bool) []Change {
+	var changes []Change
+	for _, f := range b.OpenFrom(check) {
+		if !pick(f.ID) {
+			continue
+		}
+		r := b.Records[f.ID]
+		r.Status, r.Proof, r.Closed = gungnir.FindingFixed, proof, attempt
+		changes = append(changes, Change{Kind: Closed, Finding: r.Finding, Attempts: r.Attempts(), Reopens: r.Reopens})
 	}
-	if r.Source != check {
-		return nil, &ConflictError{Check: check, ID: id, Owner: r.Source}
-	}
-	if !r.isOpen() {
-		return nil, nil
-	}
-	r.Status, r.Proof, r.Closed = gungnir.FindingFixed, proof, attempt
-	return []Change{{Kind: Closed, Finding: r.Finding, Attempts: r.Attempts(), Reopens: r.Reopens}}, nil
+	return changes
 }
 
 // Overrule applies a dispute that holds: the finding closes as overruled, with the implementer's evidence and
-// the proof of the check run (what Dispute returned) as its proof, and the book remembers which check settled
-// it. Only an open finding of a reviewer can be overruled: a check's finding is deterministic and a person
+// checkProof (SettleDispute's proof: what the check's result showed) as its proof, and the book remembers which
+// check settled it. Only an open finding of a reviewer can be overruled: a check's finding is deterministic and a person
 // fixes the check in the realm. Nothing changes on an error.
 func (b *Book) Overrule(attempt int, d gungnir.Dispute, checkProof string) ([]Change, error) {
 	r, ok := b.Records[d.ID]
@@ -206,7 +232,7 @@ func (b *Book) Overrule(attempt int, d gungnir.Dispute, checkProof string) ([]Ch
 	case !r.isOpen():
 		return nil, fmt.Errorf("finding %s is not open", d.ID)
 	}
-	proof := fmt.Sprintf("Implementer's evidence: %s\nCheck %s ran and passed in attempt %d: %s", d.Evidence, d.Check, attempt, strings.TrimSpace(checkProof))
+	proof := fmt.Sprintf("Implementer's evidence: %s\n%s", d.Evidence, strings.TrimSpace(checkProof))
 	if runes := []rune(proof); len(runes) > gungnir.MaxProof {
 		proof = string(runes[:gungnir.MaxProof])
 	}
