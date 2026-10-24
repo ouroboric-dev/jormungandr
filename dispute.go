@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/ouroboric-dev/gungnir"
-	"github.com/ouroboric-dev/gungnir/schema"
 )
 
 // Verdict is how a dispute was decided.
@@ -34,21 +33,6 @@ type DisputeOutcome struct {
 type Rejection struct {
 	gungnir.Dispute
 	Reason string `json:"reason"`
-}
-
-// ReadDisputes reads the disputes in an implementer's final answer. An answer with no disputes document is
-// the usual case and is not an error: it has no disputes and nothing to say. A document that is there but
-// can't be used (a missing or unknown field, text after it, an id twice) gives no disputes and ignored
-// holds the line to record, "dispute ignored: <why>"; the findings stay open.
-func ReadDisputes(answer string) (disputes []gungnir.Dispute, ignored string) {
-	if !strings.Contains(answer, `"disputes"`) {
-		return nil, ""
-	}
-	ds, err := schema.ParseDisputes([]byte(answer))
-	if err != nil {
-		return nil, "dispute ignored: " + err.Error()
-	}
-	return ds.Disputes, ""
 }
 
 // settleDisputes decides the attempt's disputes, one by one, after the checks ran and before the

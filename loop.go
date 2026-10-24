@@ -91,17 +91,19 @@ type CheckOutcome struct {
 // returns an *AgentFailure; anything else is an error the loop passes on.
 type Steps interface {
 	// Implement runs one implementer session, fresh, and commits what it did. The attempt counts from 1. It
-	// returns the implementer's final answer, where the loop looks for a disputes document.
-	Implement(ctx context.Context, attempt int, in Input) (string, error)
+	// returns the implementer's answer, read and decoded as a ygg.implement/v1 document: one that can't be
+	// read is an *AgentFailure.
+	Implement(ctx context.Context, attempt int, in Input) (schema.Implement, error)
 	// Dispute decides one dispute after the attempt's checks ran: it holds when the named check ran and
 	// passed in this attempt and its output contains d.Test. A Holds outcome carries the proof (the check
 	// run); DoesNotHold carries the reason; Unsettleable says no check of the loop can settle it.
 	Dispute(ctx context.Context, attempt int, d gungnir.Dispute) (DisputeOutcome, error)
 	// Check runs one check of the ladder on the committed work.
 	Check(ctx context.Context, attempt int, name string) (CheckOutcome, error)
-	// Review runs one read-only reviewer and returns its whole answer. open is what it reported
-	// before and still holds open; passed lists the checks that passed on this attempt.
-	Review(ctx context.Context, attempt int, reviewer string, open []gungnir.Finding, passed []string) (string, error)
+	// Review runs one read-only reviewer and returns its report, read and decoded as a ygg.review/v1
+	// document: an answer that can't be read is an *UnreadableError. open is what it reported before and
+	// still holds open; passed lists the checks that passed on this attempt.
+	Review(ctx context.Context, attempt int, reviewer string, open []gungnir.Finding, passed []string) (schema.Review, error)
 	// Record writes the changes to the findings to the ledger.
 	Record(attempt int, changes []Change) error
 	// Save keeps the loop's state, durably, before the loop goes on.
@@ -123,6 +125,7 @@ const (
 	ReasonExhausted  = "attempts-exhausted"
 	ReasonDisputed   = "finding-disputed" // the implementer disputed a finding that no check settled
 	ReasonUnreadable = "reviewer-unreadable"
+	ReasonBlocked    = "implementer-blocked" // the implementer answered that it could not do the work: a person decides
 )
 
 // Outcome is how a run of the loop ended.
@@ -159,18 +162,20 @@ func Run(ctx context.Context, cfg Config, st *State, steps Steps) (Outcome, erro
 			if err := steps.Save(st); err != nil {
 				return Outcome{}, err
 			}
-			answer, err := steps.Implement(ctx, st.Attempt, Input{Open: st.Book.Open(), Rejected: st.Rejected, LastFailure: st.Failure})
+			ans, err := steps.Implement(ctx, st.Attempt, Input{Open: st.Book.Open(), Rejected: st.Rejected, LastFailure: st.Failure})
 			var af *AgentFailure
 			switch {
+			case err == nil && ans.Blocked != nil:
+				// The attempt ends here: no check or reviewer judges work its author says it could not do. A
+				// person decides; if they send it back, the next attempt starts and is told why.
+				o, _ := escalate(st, ReasonBlocked, ans.Blocked.Reason)
+				st.Failure, st.Disputes, st.Rejected = "you answered that you were blocked: "+ans.Blocked.Reason, nil, nil
+				st.Attempt, st.Phase, st.Unreadable = st.Attempt+1, PhaseImplement, nil
+				return o, steps.Save(st)
 			case err == nil:
 				// What this attempt disputes replaces what the last one did.
-				disputes, ignored := ReadDisputes(answer)
-				st.Failure, st.Phase, st.Disputes, st.Rejected = "", PhaseLadder, disputes, nil
-				var changes []Change
-				if ignored != "" {
-					changes = []Change{{Kind: DisputeIgnored, Reason: ignored}}
-				}
-				if err := recorded(st, steps, changes); err != nil {
+				st.Failure, st.Phase, st.Disputes, st.Rejected = "", PhaseLadder, ans.Disputes, nil
+				if err := steps.Save(st); err != nil {
 					return Outcome{}, err
 				}
 			case errors.As(err, &af):
@@ -262,27 +267,29 @@ func blockingFrom(st *State, reviewer string) bool {
 	return false
 }
 
-// review asks one reviewer, and asks it once more if its answer can't be used: an answer that does not
-// parse, one that drops a finding, one that closes a finding without proof, or a session that failed.
+// review asks one reviewer, and asks it once more if its answer can't be used: an answer that can't be
+// read, one that says it is blocked, one that drops a finding, one that closes a finding without proof, or a session that failed.
 // Neither runs the implementer again. Twice in a row, the loop escalates (spec §4.6). stop is true when
 // the loop ends here.
 func review(ctx context.Context, st *State, steps Steps, rv string, passed []string) (out Outcome, stop bool, err error) {
 	for {
-		answer, err := steps.Review(ctx, st.Attempt, rv, st.Book.OpenFrom(rv), passed)
+		report, err := steps.Review(ctx, st.Attempt, rv, st.Book.OpenFrom(rv), passed)
 		var af *AgentFailure
+		var ue *UnreadableError
 		var why error
 		switch {
+		case err == nil && report.Blocked != nil:
+			// A reviewer that says it could not do its work gave no report: it is asked once more, then a person decides.
+			why = fmt.Errorf("blocked: %s", report.Blocked.Reason)
 		case err == nil:
-			report, perr := schema.ParseReport([]byte(answer))
-			if perr == nil {
-				changes, rerr := st.Book.Review(st.Attempt, rv, passed, report)
-				if rerr == nil {
-					delete(st.Unreadable, rv)
-					return Outcome{}, false, recorded(st, steps, changes)
-				}
-				perr = rerr
+			changes, rerr := st.Book.Review(st.Attempt, rv, passed, gungnir.Report{Findings: report.Findings})
+			if rerr == nil {
+				delete(st.Unreadable, rv)
+				return Outcome{}, false, recorded(st, steps, changes)
 			}
-			why = perr
+			why = rerr
+		case errors.As(err, &ue):
+			why = ue
 		case errors.As(err, &af):
 			why = af
 		default:

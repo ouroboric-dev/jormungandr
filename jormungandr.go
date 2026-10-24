@@ -36,6 +36,19 @@ type AgentFailure struct{ Reason string }
 
 func (e *AgentFailure) Error() string { return "the agent failed: " + e.Reason }
 
+// UnreadableError is what Steps.Review returns for a reviewer whose answer can't be read as a
+// ygg.review/v1 document. The loop asks the reviewer once more, and escalates when it happens twice in a row.
+type UnreadableError struct {
+	Reviewer string
+	Err      error // why the answer can't be read
+}
+
+func (e *UnreadableError) Error() string {
+	return fmt.Sprintf("reviewer %s gave an answer that can't be read: %v", e.Reviewer, e.Err)
+}
+
+func (e *UnreadableError) Unwrap() error { return e.Err }
+
 // Classify says how the end of one session went. kind is empty for a session that succeeded; otherwise
 // it is how the session failed, and why is what it said. A failed result with no kind failed as an
 // agent does, as does any error that is not a *gungnir.SessionError: the safe reading of an unknown

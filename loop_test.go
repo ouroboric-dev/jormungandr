@@ -10,12 +10,13 @@ import (
 	"testing"
 
 	"github.com/ouroboric-dev/gungnir"
+	"github.com/ouroboric-dev/gungnir/schema"
 )
 
 // fakeSteps plays the steps of a loop from lists: each call takes the next entry for its kind.
 type fakeSteps struct {
 	implement []error                   // per implementer session; nil is a success
-	answers   []string                  // per implementer session: its final answer
+	answers   []schema.Implement        // per implementer session: its final answer
 	verdicts  map[string]DisputeOutcome // per finding id: how Dispute decides it; no entry is "does not hold"
 	check     map[string][]bool         // per check: passes, per attempt that reaches it
 	review    map[string][]answer       // per reviewer: its answers, in order
@@ -30,18 +31,18 @@ type fakeSteps struct {
 }
 
 type answer struct {
-	text string
-	err  error
+	rev schema.Review
+	err error
 }
 
-func (f *fakeSteps) Implement(_ context.Context, attempt int, in Input) (string, error) {
+func (f *fakeSteps) Implement(_ context.Context, attempt int, in Input) (schema.Implement, error) {
 	f.calls = append(f.calls, fmt.Sprintf("implement %d", attempt))
 	f.inputs = append(f.inputs, in)
 	var err error
 	if f.ni < len(f.implement) {
 		err = f.implement[f.ni]
 	}
-	var out string
+	var out schema.Implement
 	if f.ni < len(f.answers) {
 		out = f.answers[f.ni]
 	}
@@ -74,7 +75,7 @@ func (f *fakeSteps) Check(_ context.Context, attempt int, name string) (CheckOut
 		Location: "logs/" + name + ".log:1", Claim: "check " + name + " failed", Status: gungnir.FindingOpen}}, nil
 }
 
-func (f *fakeSteps) Review(_ context.Context, attempt int, reviewer string, open []gungnir.Finding, passed []string) (string, error) {
+func (f *fakeSteps) Review(_ context.Context, attempt int, reviewer string, open []gungnir.Finding, passed []string) (schema.Review, error) {
 	f.calls = append(f.calls, fmt.Sprintf("review %d %s", attempt, reviewer))
 	if f.nr == nil {
 		f.nr = map[string]int{}
@@ -83,9 +84,9 @@ func (f *fakeSteps) Review(_ context.Context, attempt int, reviewer string, open
 	f.nr[reviewer]++
 	as := f.review[reviewer]
 	if i >= len(as) {
-		return `{"findings":[]}`, nil
+		return schema.Review{Findings: []gungnir.Finding{}}, nil
 	}
-	return as[i].text, as[i].err
+	return as[i].rev, as[i].err
 }
 
 func (f *fakeSteps) Record(_ int, changes []Change) error {
@@ -103,9 +104,8 @@ func (f *fakeSteps) Save(s *State) error {
 
 func (f *fakeSteps) ran(call string) bool { return slices.Contains(f.calls, call) }
 
-func rep(fs ...gungnir.Finding) string {
-	raw, _ := json.Marshal(gungnir.Report{Findings: append([]gungnir.Finding{}, fs...)})
-	return string(raw)
+func rep(fs ...gungnir.Finding) schema.Review {
+	return schema.Review{Findings: append([]gungnir.Finding{}, fs...)}
 }
 
 var cfg = Config{Attempts: 3, Checks: []string{"vet", "test"}, Reviewers: []string{"spec", "quality"}}
@@ -157,7 +157,7 @@ func TestAFailingCheckGoesBackToTheImplementerAndStopsTheLadder(t *testing.T) {
 func TestAReviewersFindingIsFixedOnlyWhenTheReviewerSaysSoWithProof(t *testing.T) {
 	major := finding("spec-1", "spec", gungnir.SeverityMajor)
 	f := &fakeSteps{review: map[string][]answer{
-		"spec": {{text: rep(major)}, {text: rep(fixed(major, "api/auth.go:44 limits tries; check test passed"))}},
+		"spec": {{rev: rep(major)}, {rev: rep(fixed(major, "api/auth.go:44 limits tries; check test passed"))}},
 	}}
 	out := run(t, NewState(cfg), f)
 	if out.Kind != Passed || out.Attempts != 2 {
@@ -177,7 +177,7 @@ func TestAReviewersFindingIsFixedOnlyWhenTheReviewerSaysSoWithProof(t *testing.T
 
 func TestAMinorFindingIsRecordedButDoesNotFailTheLoop(t *testing.T) {
 	minor := finding("q-1", "quality", gungnir.SeverityMinor)
-	f := &fakeSteps{review: map[string][]answer{"quality": {{text: rep(minor)}}}}
+	f := &fakeSteps{review: map[string][]answer{"quality": {{rev: rep(minor)}}}}
 	st := NewState(cfg)
 	out := run(t, st, f)
 	if out.Kind != Passed || out.Attempts != 1 {
@@ -225,11 +225,12 @@ func TestASessionThatFailedAsAnAgentUsesUpAnAttemptAndSaysWhy(t *testing.T) {
 	}
 }
 
-func TestAReviewerThatCannotBeReadIsAskedAgainOnceAndThenTheLoopEscalates(t *testing.T) {
-	good := answer{text: `{"findings":[]}`}
+func TestAnUnreadableReviewIsAskedOnceMore(t *testing.T) {
+	good := answer{rev: rep()}
 	for name, bad := range map[string]answer{
-		"prose":                   {text: "LGTM, ship it."},
-		"a finding with no place": {text: `{"findings":[{"id":"a","source":"spec","severity":"major","claim":"c","status":"open"}]}`},
+		"prose":                   {err: &UnreadableError{Reviewer: "spec", Err: errors.New("not a JSON document")}},
+		"a finding with no place": {err: &UnreadableError{Reviewer: "spec", Err: errors.New("/findings/0 missing location")}},
+		"a blocked reviewer":      {rev: schema.Review{Blocked: &gungnir.Blocked{Reason: "no repository"}}},
 		"a failed session":        {err: &AgentFailure{Reason: "exit 1"}},
 	} {
 		f := &fakeSteps{review: map[string][]answer{"spec": {bad, good}}}
@@ -252,7 +253,7 @@ func TestAReviewerThatCannotBeReadIsAskedAgainOnceAndThenTheLoopEscalates(t *tes
 
 func TestAReportThatDropsAFindingIsUnreadable(t *testing.T) {
 	major := finding("spec-1", "spec", gungnir.SeverityMajor)
-	f := &fakeSteps{review: map[string][]answer{"spec": {{text: rep(major)}, {text: rep()}, {text: rep()}}}}
+	f := &fakeSteps{review: map[string][]answer{"spec": {{rev: rep(major)}, {rev: rep()}, {rev: rep()}}}}
 	out := run(t, NewState(cfg), f)
 	if out.Kind != Escalated || out.Reason != ReasonUnreadable || !strings.Contains(out.Detail, "doesn't mention") {
 		t.Errorf("Run() = %+v; a report that makes a finding vanish must not pass", out)
@@ -354,13 +355,13 @@ func TestAnUnreadableAnswerIsRemembered(t *testing.T) {
 	// The count of unreadable answers survives a stop between the two asks, so a resume does not give
 	// a reviewer a third chance.
 	cap := &gungnir.CapError{Scope: gungnir.CapDay, Dimension: gungnir.CapTurns, Used: 1, Limit: 1}
-	f := &fakeSteps{review: map[string][]answer{"spec": {{text: "prose"}, {err: cap}}}}
+	f := &fakeSteps{review: map[string][]answer{"spec": {{err: &UnreadableError{Reviewer: "spec", Err: errors.New("prose")}}, {err: cap}}}}
 	st := NewState(cfg)
 	if out := run(t, st, f); out.Kind != Capped || st.Unreadable["spec"] != 1 {
 		t.Fatalf("Run() = %+v, unreadable %v", out, st.Unreadable)
 	}
 	resumed := f.saved[len(f.saved)-1]
-	g := &fakeSteps{review: map[string][]answer{"spec": {{text: "more prose"}}}}
+	g := &fakeSteps{review: map[string][]answer{"spec": {{err: &UnreadableError{Reviewer: "spec", Err: errors.New("more prose")}}}}}
 	out, err := Run(context.Background(), cfg, &resumed, g)
 	if err != nil || out.Kind != Escalated || out.Reason != ReasonUnreadable {
 		t.Errorf("Run() = %+v, %v; the second unreadable answer, across a stop, must escalate", out, err)
@@ -384,11 +385,32 @@ func TestABlockerReportedAgainAsMinorDoesNotLetTheLoopPass(t *testing.T) {
 	lowered := blocker
 	lowered.Severity = gungnir.SeverityMinor
 	f := &fakeSteps{review: map[string][]answer{
-		"spec": {{text: rep(blocker)}, {text: rep(lowered)}, {text: rep(lowered)}},
+		"spec": {{rev: rep(blocker)}, {rev: rep(lowered)}, {rev: rep(lowered)}},
 	}}
 	st := NewState(cfg)
 	out := run(t, st, f)
 	if out.Kind == Passed || st.Passed {
 		t.Fatalf("Run() = %+v; a blocker lowered to minor with no proof must not pass", out)
+	}
+}
+
+func TestABlockedImplementerEscalatesAtOnce(t *testing.T) {
+	f := &fakeSteps{answers: []schema.Implement{{
+		Blocked:  &gungnir.Blocked{Reason: "the contract is missing from the spec"},
+		Disputes: []gungnir.Dispute{findIndexDispute}, // ignored: the attempt ends
+	}}}
+	st := NewState(cfg)
+	out := run(t, st, f)
+	if out.Kind != Escalated || out.Reason != ReasonBlocked || out.Attempts != 1 || out.Detail != "the contract is missing from the spec" {
+		t.Fatalf("Run() = %+v", out)
+	}
+	if ReasonBlocked != "implementer-blocked" {
+		t.Errorf("ReasonBlocked = %q", ReasonBlocked)
+	}
+	if want := []string{"implement 1"}; !slices.Equal(f.calls, want) {
+		t.Errorf("calls = %v, want %v: no check, dispute or review runs for a blocked attempt", f.calls, want)
+	}
+	if st.Passed || len(st.Disputes) != 0 {
+		t.Errorf("state = %+v", st)
 	}
 }

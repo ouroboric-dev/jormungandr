@@ -18,13 +18,19 @@ The loop: build, check and fix with attempts, backoff, budgets, feedback and esc
 - Keeps the findings (`Book`). A finding closes only when its source confirms the fix: a check that
   passes, or a reviewer's report that carries proof, a `file:line` and the name of a check that passed.
   The implementer's claim never closes one (spec §4.6).
-- Treats a reviewer's answer that can't be used as a failure, never a pass: it asks the reviewer once
-  more, and then escalates (spec §4.6).
+- Works on typed answers: `Steps.Implement` returns a `schema.Implement` (`ygg.implement/v1`) and
+  `Steps.Review` a `schema.Review` (`ygg.review/v1`), which Odin has read and decoded. `AnswerInstructions`
+  tells a session how to hand its answer back, from the contract's schema.
+- Treats a reviewer's answer that can't be used as a failure, never a pass: an `*UnreadableError` from
+  `Steps.Review`, a `blocked` report, or a report that drops a finding. It asks the reviewer once more, and
+  then escalates (spec §4.6).
+- Ends the loop at once when the implementer answers `blocked`: it escalates as `implementer-blocked` with
+  the reason, and no check or reviewer runs for that attempt.
 - Decides what a failed session means (`Classify`, `Retrier`): a transient failure is retried with a
   backoff and is not a loop attempt, a used-up quota pauses the run, an infrastructure failure stops
   it, and anything else counts as a loop attempt (spec §12).
-- Settles a disputed finding with a check (`ReadDisputes`, `Steps.Dispute`): the implementer's final answer may
-  end with a `disputes` document naming a check of the loop and a test id. After the checks ran, a dispute
+- Settles a disputed finding with a check (`Steps.Dispute`): the implementer's answer may
+  hold `disputes`, each naming a check of the loop and a test id. After the checks ran, a dispute
   that holds overrules the finding (`Book.Overrule`); one that does not leaves it open and the next prompt says
   why (`FeedbackWith`); one no check can settle escalates with `finding-disputed`, with both sides. A reviewer's
   repeat of an overruled claim reopens it only at another location or after the overruling check failed.

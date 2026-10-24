@@ -1,17 +1,16 @@
 package jormungandr
 
 import (
-	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/ouroboric-dev/gungnir"
+	"github.com/ouroboric-dev/gungnir/schema"
 )
 
-func disputeDoc(ds ...gungnir.Dispute) string {
-	raw, _ := json.Marshal(gungnir.Disputes{Disputes: ds})
-	return "I checked this with a test.\n\n" + string(raw)
+func disputeDoc(ds ...gungnir.Dispute) schema.Implement {
+	return schema.Implement{Summary: "I checked this with a test.", Disputes: ds}
 }
 
 var findIndexDispute = gungnir.Dispute{ID: "spec-1", Check: "test", Test: "TestFindIndex", Evidence: "node -e showed [1,2].findIndex(x => x == 2) returns 1; web/list.js:12"}
@@ -29,10 +28,10 @@ func holds() map[string]DisputeOutcome {
 func TestADisputeThatHoldsOverrulesTheFindingAndTheLoopPasses(t *testing.T) {
 	b := findIndexBlocker()
 	f := &fakeSteps{
-		answers:  []string{"", disputeDoc(findIndexDispute)},
+		answers:  []schema.Implement{{}, disputeDoc(findIndexDispute)},
 		verdicts: holds(),
 		// The reviewer repeats the claim in attempt 2 even though it was told nothing is open: it must not reopen.
-		review: map[string][]answer{"spec": {{text: rep(b)}, {text: rep(b)}}},
+		review: map[string][]answer{"spec": {{rev: rep(b)}, {rev: rep(b)}}},
 	}
 	st := NewState(cfg)
 	out := run(t, st, f)
@@ -73,8 +72,8 @@ func TestADisputeThatHoldsOverrulesTheFindingAndTheLoopPasses(t *testing.T) {
 func TestADisputeThatDoesNotHoldLeavesTheFindingOpenAndTheNextAttemptIsToldWhy(t *testing.T) {
 	b := findIndexBlocker()
 	f := &fakeSteps{
-		answers: []string{"", disputeDoc(findIndexDispute), ""},
-		review:  map[string][]answer{"spec": {{text: rep(b)}, {text: rep(b)}, {text: rep(fixed(b, "web/list.js:12 is right; check test passed"))}}},
+		answers: []schema.Implement{{}, disputeDoc(findIndexDispute), {}},
+		review:  map[string][]answer{"spec": {{rev: rep(b)}, {rev: rep(b)}, {rev: rep(fixed(b, "web/list.js:12 is right; check test passed"))}}},
 	}
 	st := NewState(cfg)
 	out := run(t, st, f)
@@ -104,7 +103,7 @@ func TestADisputeThatDoesNotHoldLeavesTheFindingOpenAndTheNextAttemptIsToldWhy(t
 func TestADisputeThatNeverHoldsEscalatesAsDisputedWhenTheAttemptsRunOut(t *testing.T) {
 	b := findIndexBlocker()
 	d := disputeDoc(findIndexDispute)
-	f := &fakeSteps{answers: []string{d, d, d}, review: map[string][]answer{"spec": {{text: rep(b)}, {text: rep(b)}, {text: rep(b)}}}}
+	f := &fakeSteps{answers: []schema.Implement{d, d, d}, review: map[string][]answer{"spec": {{rev: rep(b)}, {rev: rep(b)}, {rev: rep(b)}}}}
 	out := run(t, NewState(cfg), f)
 	if out.Kind != Escalated || out.Reason != ReasonDisputed || out.Attempts != 3 {
 		t.Fatalf("Run() = %+v", out)
@@ -115,7 +114,7 @@ func TestADisputeThatNeverHoldsEscalatesAsDisputedWhenTheAttemptsRunOut(t *testi
 		}
 	}
 	// Disputed only in an early attempt, not in the last: the plain reason stands.
-	f = &fakeSteps{answers: []string{d, "", ""}, review: map[string][]answer{"spec": {{text: rep(b)}, {text: rep(b)}, {text: rep(b)}}}}
+	f = &fakeSteps{answers: []schema.Implement{d, {}, {}}, review: map[string][]answer{"spec": {{rev: rep(b)}, {rev: rep(b)}, {rev: rep(b)}}}}
 	if out := run(t, NewState(cfg), f); out.Kind != Escalated || out.Reason != ReasonExhausted {
 		t.Errorf("Run() = %+v; want attempts-exhausted when the last attempt disputed nothing", out)
 	}
@@ -128,9 +127,9 @@ func TestADisputeNoCheckCanSettleEscalatesAtOnceWithBothSides(t *testing.T) {
 		"a check Odin cannot settle":    findIndexDispute,
 	} {
 		f := &fakeSteps{
-			answers:  []string{"", disputeDoc(dd)},
+			answers:  []schema.Implement{{}, disputeDoc(dd)},
 			verdicts: map[string]DisputeOutcome{"spec-1": {Verdict: Unsettleable, Reason: "no check covers it"}},
-			review:   map[string][]answer{"spec": {{text: rep(b)}}},
+			review:   map[string][]answer{"spec": {{rev: rep(b)}}},
 		}
 		st := NewState(cfg)
 		out := run(t, st, f)
@@ -153,7 +152,7 @@ func TestADisputeNoCheckCanSettleEscalatesAtOnceWithBothSides(t *testing.T) {
 			t.Errorf("%s: state %+v", name, st)
 		}
 		st.Extend(cfg)
-		g := &fakeSteps{review: map[string][]answer{"spec": {{text: rep(b)}}}}
+		g := &fakeSteps{review: map[string][]answer{"spec": {{rev: rep(b)}}}}
 		if out := run(t, st, g); g.ran("dispute 3 spec-1") || out.Reason == ReasonDisputed {
 			t.Errorf("%s: after the operator's ruling Run() = %+v, calls %v", name, out, g.calls)
 		}
@@ -162,7 +161,7 @@ func TestADisputeNoCheckCanSettleEscalatesAtOnceWithBothSides(t *testing.T) {
 
 func TestAnAnswerWithNoDisputesDocumentChangesNothing(t *testing.T) {
 	b := findIndexBlocker()
-	f := &fakeSteps{answers: []string{"", "I fixed the loop bound in web/list.js and added a test."}, review: map[string][]answer{"spec": {{text: rep(b)}, {text: rep(fixed(b, "web/list.js:12; check test passed"))}}}}
+	f := &fakeSteps{answers: []schema.Implement{{}, {Summary: "I fixed the loop bound in web/list.js and added a test."}}, review: map[string][]answer{"spec": {{rev: rep(b)}, {rev: rep(fixed(b, "web/list.js:12; check test passed"))}}}}
 	out := run(t, NewState(cfg), f)
 	if out.Kind != Passed {
 		t.Fatalf("Run() = %+v", out)
@@ -179,34 +178,6 @@ func TestAnAnswerWithNoDisputesDocumentChangesNothing(t *testing.T) {
 	}
 }
 
-func TestAMalformedDisputesDocumentIsRecordedAndIgnored(t *testing.T) {
-	b := findIndexBlocker()
-	for name, doc := range map[string]string{
-		"a missing field":  `{"disputes":[{"id":"spec-1","check":"test","evidence":"e"}]}`,
-		"an unknown field": `{"disputes":[{"id":"spec-1","check":"test","test":"T","evidence":"e","extra":1}]}`,
-		"not json":         `"disputes": [ nope`,
-	} {
-		f := &fakeSteps{answers: []string{"", doc}, verdicts: holds(), review: map[string][]answer{"spec": {{text: rep(b)}, {text: rep(b)}, {text: rep(b)}}}}
-		st := NewState(cfg)
-		out := run(t, st, f)
-		if out.Kind != Escalated || out.Reason != ReasonExhausted {
-			t.Errorf("%s: Run() = %+v; the finding stays open", name, out)
-		}
-		var ignored []Change
-		for _, c := range f.changes {
-			if c.Kind == DisputeIgnored {
-				ignored = append(ignored, c)
-			}
-		}
-		if len(ignored) != 1 || !strings.HasPrefix(ignored[0].Reason, "dispute ignored: ") {
-			t.Errorf("%s: ignored changes = %+v", name, ignored)
-		}
-		if f.ran("dispute 2 spec-1") {
-			t.Errorf("%s: a malformed document was decided", name)
-		}
-	}
-}
-
 func TestADisputeAboutAFindingThatCannotBeDisputedIsRecordedAndIgnored(t *testing.T) {
 	b := findIndexBlocker()
 	ds := []gungnir.Dispute{
@@ -214,10 +185,10 @@ func TestADisputeAboutAFindingThatCannotBeDisputedIsRecordedAndIgnored(t *testin
 		{ID: "check-vet", Check: "test", Test: "T", Evidence: "e"},
 	}
 	f := &fakeSteps{
-		answers:  []string{"", disputeDoc(ds...)},
+		answers:  []schema.Implement{{}, disputeDoc(ds...)},
 		verdicts: map[string]DisputeOutcome{"no-such": {Verdict: Holds, Proof: "p"}, "check-vet": {Verdict: Holds, Proof: "p"}},
 		check:    map[string][]bool{"vet": {true, false}},
-		review:   map[string][]answer{"spec": {{text: rep(b)}}},
+		review:   map[string][]answer{"spec": {{rev: rep(b)}}},
 	}
 	st := NewState(cfg)
 	// Attempt 1: spec raises the blocker. Attempt 2: vet fails, so check-vet is open.
@@ -246,42 +217,7 @@ func TestADisputeAboutAFindingThatCannotBeDisputedIsRecordedAndIgnored(t *testin
 	}
 }
 
-func TestReadDisputes(t *testing.T) {
-	cases := []struct {
-		name, answer string
-		n            int
-		ignored      bool
-	}{
-		{"plain prose", "Done. Nothing to dispute.", 0, false},
-		{"empty", "", 0, false},
-		{"a valid document after prose", disputeDoc(findIndexDispute), 1, false},
-		{"a fenced document", "x\n```json\n" + strings.SplitN(disputeDoc(findIndexDispute), "\n\n", 2)[1] + "\n```", 1, false},
-		{"unknown field", `{"disputes":[{"id":"a","check":"c","test":"t","evidence":"e","x":1}]}`, 0, true},
-		{"text after it", disputeDoc(findIndexDispute) + "\nthanks", 0, true},
-	}
-	for _, c := range cases {
-		ds, why := ReadDisputes(c.answer)
-		if len(ds) != c.n || (why != "") != c.ignored {
-			t.Errorf("%s: ReadDisputes() = %v, %q", c.name, ds, why)
-		}
-		if why != "" && !strings.HasPrefix(why, "dispute ignored: ") {
-			t.Errorf("%s: reason %q", c.name, why)
-		}
-	}
-}
-
-func TestDisputeFormatIsTheDocumentParseDisputesReadsAndComesOnlyWithOpenFindings(t *testing.T) {
-	example := DisputeFormat[strings.Index(DisputeFormat, `{"disputes"`):]
-	example = example[:strings.Index(example, "\n")]
-	example = strings.NewReplacer(`"<finding id>"`, `"spec-1"`, `"<check name>"`, `"test"`, `"<test id>"`, `"TestFindIndex"`, `"<what the test showed, and where>"`, `"it passes; web/list.js:12"`).Replace(example)
-	if ds, why := ReadDisputes(example); len(ds) != 1 || why != "" {
-		t.Errorf("the example in DisputeFormat does not parse: %q\n%s", why, example)
-	}
-	for _, w := range []string{"End your answer with one JSON document", "check", "test id", "output"} {
-		if !strings.Contains(DisputeFormat, w) {
-			t.Errorf("DisputeFormat lacks %q:\n%s", w, DisputeFormat)
-		}
-	}
+func TestTheDisputeInstructionsComeOnlyWithOpenFindings(t *testing.T) {
 	base := "Do the task."
 	if got := WithDisputeFormat(base, nil, []string{"vet", "test"}); got != base {
 		t.Errorf("no open findings: %q", got)
@@ -290,13 +226,18 @@ func TestDisputeFormatIsTheDocumentParseDisputesReadsAndComesOnlyWithOpenFinding
 	if !strings.HasPrefix(got, base) || !strings.Contains(got, DisputeFormat) || !strings.Contains(got, "vet, test") {
 		t.Errorf("open findings:\n%s", got)
 	}
+	for _, w := range []string{"`disputes`", "check", "test id", "output"} {
+		if !strings.Contains(DisputeFormat, w) {
+			t.Errorf("DisputeFormat lacks %q:\n%s", w, DisputeFormat)
+		}
+	}
 	if got := WithDisputeFormat(base, []gungnir.Finding{findIndexBlocker()}, nil); !strings.Contains(got, "no checks") {
 		t.Errorf("no checks:\n%s", got)
 	}
 }
 
 func TestTheReviewerIsToldARepeatedBlockerAfterADisputeNeedsProof(t *testing.T) {
-	for _, text := range []string{ReportFormat, ReviewRequest("spec", nil, nil)} {
+	for _, text := range []string{ReviewRequest("spec", nil, nil, true)} {
 		for _, w := range []string{"disputed", "failing check", "different location"} {
 			if !strings.Contains(text, w) {
 				t.Errorf("lacks %q:\n%s", w, text)
