@@ -15,7 +15,9 @@ The loop: build, check and fix with attempts, backoff, budgets, feedback and esc
 - Runs a bounded loop (`Run`): an implementer works, a ladder of checks and read-only reviewers judges
   the work, the findings that are still open go back to the next attempt, and after N attempts (3 by
   default) the loop escalates (spec §4.2, §7.3).
-- Keeps the findings (`Book`). A finding closes only when its source confirms the fix: a check that
+- Keeps the findings (`Book`). A failed check gives one finding per failure (ids `check-<name>-<12 hex>`, built by
+  gleipnir): `CheckFailed` raises or reopens each and closes the open ones of that check it no longer reports;
+  `CheckPassed` closes all of them. A finding closes only when its source confirms the fix: a check that
   passes, or a reviewer's report that carries proof, a `file:line` and the name of a check that passed.
   The implementer's claim never closes one (spec §4.6).
 - Works on typed answers: `Steps.Implement` returns a `schema.Implement` (`ygg.implement/v1`) and
@@ -31,7 +33,8 @@ The loop: build, check and fix with attempts, backoff, budgets, feedback and esc
   it, and anything else counts as a loop attempt (spec §12).
 - Settles a disputed finding with a check (`Steps.Dispute`): the implementer's answer may
   hold `disputes`, each naming a check of the loop and a test id. After the checks ran, a dispute
-  that holds overrules the finding (`Book.Overrule`); one that does not leaves it open and the next prompt says
+  holds when its check passed in the attempt, or ran and its typed result's failing test ids (`CheckOutcome.Failed`)
+  do not hold the test (`SettleDispute`); one that holds overrules the finding (`Book.Overrule`); one that does not leaves it open and the next prompt says
   why (`FeedbackWith`); one no check can settle escalates with `finding-disputed`, with both sides. A reviewer's
   repeat of an overruled claim reopens it only at another location or after the overruling check failed.
 - Asks the budget before every session, so none starts over a cap (spec §7.4).

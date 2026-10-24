@@ -13,9 +13,9 @@ import (
 type Verdict string
 
 const (
-	// Holds: the named check ran and passed in this attempt, and its output names the test.
+	// Holds: the named check passed in this attempt, or ran and its failing tests do not include the disputed one.
 	Holds Verdict = "holds"
-	// DoesNotHold: the check did not run, did not pass, or did not print the test. The finding stays open.
+	// DoesNotHold: the check did not run, or still fails the test. The finding stays open.
 	DoesNotHold Verdict = "does-not-hold"
 	// Unsettleable: no check of the loop can decide it. The loop escalates as disputed.
 	Unsettleable Verdict = "unsettleable"
@@ -26,6 +26,26 @@ type DisputeOutcome struct {
 	Verdict Verdict
 	Proof   string // Holds: the check run, which goes into the finding's proof
 	Reason  string // DoesNotHold and Unsettleable: why
+}
+
+// SettleDispute is the rule that decides a dispute on the checks that ran in the attempt, by check name. It
+// holds when the check passed, or ran and its Failed (the typed result's failing test ids) does not hold the
+// disputed test: the result names failures, not passes, so the output need not name the test. It does not
+// hold when the check did not run in the attempt, or still fails the test. A check that failed and named no
+// failing test says nothing about this one, so it does not hold either. Steps.Dispute may use it.
+func SettleDispute(attempt int, d gungnir.Dispute, ran map[string]CheckOutcome) DisputeOutcome {
+	co, ok := ran[d.Check]
+	switch {
+	case !ok:
+		return DisputeOutcome{Verdict: DoesNotHold, Reason: fmt.Sprintf("check %s did not run in attempt %d", d.Check, attempt)}
+	case co.Passed:
+		return DisputeOutcome{Verdict: Holds, Proof: fmt.Sprintf("check %s passed in attempt %d: %s", d.Check, attempt, strings.TrimSpace(co.Proof))}
+	case slices.Contains(co.Failed, d.Test):
+		return DisputeOutcome{Verdict: DoesNotHold, Reason: fmt.Sprintf("check %s ran in attempt %d and still fails %s", d.Check, attempt, d.Test)}
+	case len(co.Failed) == 0:
+		return DisputeOutcome{Verdict: DoesNotHold, Reason: fmt.Sprintf("check %s failed in attempt %d and names no failing test, so it can't show that %s passes", d.Check, attempt, d.Test)}
+	}
+	return DisputeOutcome{Verdict: Holds, Proof: fmt.Sprintf("check %s ran in attempt %d and %s is not among its failing tests (%s)", d.Check, attempt, d.Test, strings.Join(co.Failed, ", "))}
 }
 
 // Rejection is a dispute that did not hold, with the reason, kept so the next attempt is told and the

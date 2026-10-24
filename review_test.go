@@ -76,7 +76,7 @@ func TestAReviewerReportThatBreaksARuleChangesNothing(t *testing.T) {
 
 func TestAReviewerCannotTouchAnotherSourcesFinding(t *testing.T) {
 	var b Book
-	b.CheckFailed(1, finding("check-test", "test", gungnir.SeverityBlocker))
+	failed(&b, 1, finding("check-test", "test", gungnir.SeverityBlocker))
 	_, err := b.Review(1, "spec", passed, report(fixed(finding("check-test", "spec", gungnir.SeverityBlocker), "api/a.go:1; check test passed")))
 	if err == nil || !strings.Contains(err.Error(), "was not open") && !strings.Contains(err.Error(), "belongs to") {
 		t.Errorf("Review() = %v; a reviewer closed a check's finding", err)

@@ -22,7 +22,7 @@ func findIndexBlocker() gungnir.Finding {
 }
 
 func holds() map[string]DisputeOutcome {
-	return map[string]DisputeOutcome{"spec-1": {Verdict: Holds, Proof: "check test passed in attempt 2; its output names TestFindIndex"}}
+	return map[string]DisputeOutcome{"spec-1": {Verdict: Holds, Proof: "check test ran in attempt 2 and TestFindIndex does not fail"}}
 }
 
 func TestADisputeThatHoldsOverrulesTheFindingAndTheLoopPasses(t *testing.T) {
@@ -89,11 +89,11 @@ func TestADisputeThatDoesNotHoldLeavesTheFindingOpenAndTheNextAttemptIsToldWhy(t
 		t.Errorf("attempt 2 was told of a rejection before it disputed: %+v", f.inputs[1].Rejected)
 	}
 	got := f.inputs[2].Rejected
-	if len(got) != 1 || got[0].ID != "spec-1" || !strings.Contains(got[0].Reason, "did not print TestFindIndex") {
+	if len(got) != 1 || got[0].ID != "spec-1" || !strings.Contains(got[0].Reason, "still fails TestFindIndex") {
 		t.Fatalf("attempt 3 input rejected = %+v", got)
 	}
 	text := FeedbackWith(f.inputs[2].Open, got, "", "")
-	for _, w := range []string{"## Your disputes that did not hold", "spec-1", "check test", "TestFindIndex", "did not print TestFindIndex", "stays open"} {
+	for _, w := range []string{"## Your disputes that did not hold", "spec-1", "check test", "TestFindIndex", "still fails TestFindIndex", "stays open"} {
 		if !strings.Contains(text, w) {
 			t.Errorf("feedback lacks %q:\n%s", w, text)
 		}
@@ -226,7 +226,7 @@ func TestTheDisputeInstructionsComeOnlyWithOpenFindings(t *testing.T) {
 	if !strings.HasPrefix(got, base) || !strings.Contains(got, DisputeFormat) || !strings.Contains(got, "vet, test") {
 		t.Errorf("open findings:\n%s", got)
 	}
-	for _, w := range []string{"`disputes`", "check", "test id", "output"} {
+	for _, w := range []string{"`disputes`", "check", "is not among the tests it reports as failed"} {
 		if !strings.Contains(DisputeFormat, w) {
 			t.Errorf("DisputeFormat lacks %q:\n%s", w, DisputeFormat)
 		}
@@ -243,5 +243,34 @@ func TestTheReviewerIsToldARepeatedBlockerAfterADisputeNeedsProof(t *testing.T) 
 				t.Errorf("lacks %q:\n%s", w, text)
 			}
 		}
+	}
+}
+
+func TestADisputeHoldsWhenTheTestNoLongerFails(t *testing.T) {
+	d := findIndexDispute // check "test", test "TestFindIndex"
+	cases := []struct {
+		name string
+		ran  map[string]CheckOutcome
+		want Verdict
+	}{
+		{"the check passed", map[string]CheckOutcome{"test": {Passed: true, Proof: "check test: exit 0"}}, Holds},
+		{"the check failed on other tests", map[string]CheckOutcome{"test": {Failed: []string{"TestOther"}}}, Holds},
+		{"the check still fails the test", map[string]CheckOutcome{"test": {Failed: []string{"TestOther", "TestFindIndex"}}}, DoesNotHold},
+		{"the check failed and named no test", map[string]CheckOutcome{"test": {}}, DoesNotHold},
+		{"the check did not run", map[string]CheckOutcome{"vet": {Passed: true}}, DoesNotHold},
+		{"no check ran", nil, DoesNotHold},
+	}
+	for _, c := range cases {
+		got := SettleDispute(2, d, c.ran)
+		if got.Verdict != c.want {
+			t.Errorf("%s: verdict %q, want %q (%+v)", c.name, got.Verdict, c.want, got)
+		}
+		if c.want == Holds && got.Proof == "" || c.want == DoesNotHold && got.Reason == "" {
+			t.Errorf("%s: %+v lacks its proof or reason", c.name, got)
+		}
+	}
+	// A passing check's output need not name the test: the typed result names failures, not passes.
+	if got := SettleDispute(2, d, map[string]CheckOutcome{"test": {Passed: true, Proof: "exit 0"}}); got.Verdict != Holds || !strings.Contains(got.Proof, "exit 0") {
+		t.Errorf("a pass with a silent output = %+v", got)
 	}
 }

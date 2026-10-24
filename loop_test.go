@@ -55,7 +55,7 @@ func (f *fakeSteps) Dispute(_ context.Context, attempt int, d gungnir.Dispute) (
 	if v, ok := f.verdicts[d.ID]; ok {
 		return v, nil
 	}
-	return DisputeOutcome{Verdict: DoesNotHold, Reason: "check " + d.Check + " did not print " + d.Test}, nil
+	return DisputeOutcome{Verdict: DoesNotHold, Reason: "check " + d.Check + " still fails " + d.Test}, nil
 }
 
 func (f *fakeSteps) Check(_ context.Context, attempt int, name string) (CheckOutcome, error) {
@@ -69,10 +69,10 @@ func (f *fakeSteps) Check(_ context.Context, attempt int, name string) (CheckOut
 	ok := i >= len(passes) || passes[i]
 	id := "check-" + name
 	if ok {
-		return CheckOutcome{Passed: true, FindingID: id, Proof: fmt.Sprintf("check %s: exit 0", name)}, nil
+		return CheckOutcome{Passed: true, Proof: fmt.Sprintf("check %s: exit 0", name)}, nil
 	}
-	return CheckOutcome{FindingID: id, Finding: gungnir.Finding{ID: id, Source: name, Severity: gungnir.SeverityBlocker,
-		Location: "logs/" + name + ".log:1", Claim: "check " + name + " failed", Status: gungnir.FindingOpen}}, nil
+	return CheckOutcome{Findings: []gungnir.Finding{{ID: id, Source: name, Severity: gungnir.SeverityBlocker,
+		Location: "logs/" + name + ".log:1", Claim: "check " + name + " failed", Status: gungnir.FindingOpen}}}, nil
 }
 
 func (f *fakeSteps) Review(_ context.Context, attempt int, reviewer string, open []gungnir.Finding, passed []string) (schema.Review, error) {
@@ -372,7 +372,7 @@ func TestABlockingFindingFromASourceThatNoLongerRunsKeepsTheLoopFromPassing(t *t
 	// A state carried over from a ladder with another reviewer in it: nobody can close its finding now,
 	// and the work must not pass over it.
 	st := NewState(cfg)
-	st.Book.CheckFailed(1, finding("ghost-1", "ghost", gungnir.SeverityMajor))
+	failed(&st.Book, 1, finding("ghost-1", "ghost", gungnir.SeverityMajor))
 	f := &fakeSteps{}
 	out := run(t, st, f)
 	if out.Kind == Passed || st.Passed {
@@ -412,5 +412,11 @@ func TestABlockedImplementerEscalatesAtOnce(t *testing.T) {
 	}
 	if st.Passed || len(st.Disputes) != 0 {
 		t.Errorf("state = %+v", st)
+	}
+	if st.Attempt != 2 || st.Phase != PhaseImplement || st.Failure != "you answered that you were blocked: the contract is missing from the spec" {
+		t.Errorf("saved state: attempt %d, phase %q, failure %q; want the next attempt, told why", st.Attempt, st.Phase, st.Failure)
+	}
+	if last := f.saved[len(f.saved)-1]; last.Attempt != 2 || last.Phase != PhaseImplement || !strings.Contains(last.Failure, "the contract is missing from the spec") {
+		t.Errorf("last save = attempt %d, phase %q, failure %q", last.Attempt, last.Phase, last.Failure)
 	}
 }

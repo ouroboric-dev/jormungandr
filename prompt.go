@@ -172,20 +172,23 @@ const reviewRules = `- "id" names the problem and stays the same every time you 
 
 // DisputeFormat explains to an implementer how to dispute a finding it believes is wrong. A dispute is settled
 // by a check of the loop, never by its word against the reviewer's. It goes in the answer's `disputes` field;
-// AnswerInstructions says how to hand the answer back.
+// AnswerInstructions says how to hand the answer back, and the caller adds it to every implementer prompt itself
+// (WithDisputeFormat does not).
 const DisputeFormat = `## Disputing a finding
 
-If you believe a finding above is wrong, do not just say so, and do not change code to please it. Prove it with a test that one of this loop's checks runs and prints, and put the dispute in the ` + "`disputes`" + ` field of your answer. Each dispute has four fields:
+If you believe a finding above is wrong, do not just say so, and do not change code to please it. Prove it with a test that one of this loop's checks runs, and put the dispute in the ` + "`disputes`" + ` field of your answer. Each dispute has four fields:
 
 - "id" is a finding listed above. You can't dispute a finding raised by a check: fix the work.
-- "check" is the name of one of this loop's checks. It must run and pass after your work.
-- "test" is a test id that the check's output will show, such as the name of a test it runs. If the output does not contain it, the dispute does not hold.
+- "check" is the name of one of this loop's checks. It must run after your work.
+- "test" is the id of a test that check runs, such as its name. The dispute holds when the check passes, or runs and that test is not among the tests it reports as failed. If the check still fails that test, the dispute does not hold.
 - "evidence" says what the test showed and where in the code.
 
 A dispute that holds closes the finding. One that does not hold leaves it open, and you are told why. If you have no disputes, leave the field out or empty: no finding changes.`
 
 // WithDisputeFormat appends DisputeFormat to an implementer's prompt, and names the loop's checks, when there
-// are open findings. With none there is nothing to dispute, and the prompt is unchanged.
+// are open findings. With none there is nothing to dispute, and the prompt is unchanged. It does not say how to
+// hand the answer back: the caller adds AnswerInstructions(schema.ContractImplement, viaSubmit) to every
+// implementer prompt itself.
 func WithDisputeFormat(prompt string, open []gungnir.Finding, checks []string) string {
 	if len(open) == 0 {
 		return prompt

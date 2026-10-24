@@ -80,10 +80,14 @@ type Input struct {
 
 // CheckOutcome is how one check ended on this attempt.
 type CheckOutcome struct {
-	Passed    bool
-	FindingID string          // the id of the finding this check raises when it fails
-	Finding   gungnir.Finding // when it failed: the finding
-	Proof     string          // when it passed: the evidence that it ran and passed, which closes its finding
+	Passed bool
+	Check  string // the check's name
+	// Findings are what a failed check reports, one per failure (ygg.check/v1, read by gleipnir): each has the
+	// id check-<name>-<12 hex> and the check as its source. A check that ran and failed with no typed result
+	// reports one, check-<name>-result.
+	Findings []gungnir.Finding
+	Proof    string   // when it passed: the evidence that it ran and passed, which closes its findings
+	Failed   []string // the ids of the tests the typed result says failed; a dispute is settled on them
 }
 
 // Steps are the side effects of a loop, which Odin implements. A step that stops the loop for a budget
@@ -94,8 +98,8 @@ type Steps interface {
 	// returns the implementer's answer, read and decoded as a ygg.implement/v1 document: one that can't be
 	// read is an *AgentFailure.
 	Implement(ctx context.Context, attempt int, in Input) (schema.Implement, error)
-	// Dispute decides one dispute after the attempt's checks ran: it holds when the named check ran and
-	// passed in this attempt and its output contains d.Test. A Holds outcome carries the proof (the check
+	// Dispute decides one dispute after the attempt's checks ran (SettleDispute is the rule): it holds when the
+	// named check passed in this attempt, or ran and its Failed does not hold d.Test. A Holds outcome carries the proof (the check
 	// run); DoesNotHold carries the reason; Unsettleable says no check of the loop can settle it.
 	Dispute(ctx context.Context, attempt int, d gungnir.Dispute) (DisputeOutcome, error)
 	// Check runs one check of the ladder on the committed work.
@@ -209,10 +213,10 @@ func ladder(ctx context.Context, cfg Config, st *State, steps Steps) (out Outcom
 		var cerr error
 		if co.Passed {
 			passed = append(passed, name)
-			changes, cerr = st.Book.CheckPassed(st.Attempt, name, co.FindingID, co.Proof)
+			changes, cerr = st.Book.CheckPassed(st.Attempt, name, co.Proof)
 		} else {
 			clear = false
-			changes, cerr = st.Book.CheckFailed(st.Attempt, co.Finding)
+			changes, cerr = st.Book.CheckFailed(st.Attempt, name, co.Findings)
 		}
 		if cerr != nil {
 			return Outcome{}, true, cerr
