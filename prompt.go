@@ -41,7 +41,7 @@ func FeedbackWith(open []gungnir.Finding, rejected []Rejection, lastFailure, gui
 	}
 	if len(rejected) > 0 {
 		b.WriteString("## Your disputes that did not hold\n\nYou said these findings are wrong. No check settled it, so each finding stays open. " +
-			"Fix it, or dispute it again with a check of this loop that runs a test and prints its id.\n\n")
+			"Fix it, or dispute it again with a check of this loop whose result lists the test among the tests that passed.\n\n")
 		for _, r := range rejected {
 			fmt.Fprintf(&b, "- %s: check %s, test %s: %s\n", r.ID, r.Check, r.Test, strings.TrimSpace(r.Reason))
 		}

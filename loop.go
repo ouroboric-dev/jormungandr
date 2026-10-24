@@ -82,9 +82,10 @@ type Input struct {
 type CheckOutcome struct {
 	Passed bool
 	Check  string // the check's name
-	// Findings are what a failed check reports, one per failure (ygg.check/v1, read by gleipnir): each has the
-	// id check-<name>-<12 hex> and the check as its source. A check that ran and failed with no typed result
-	// reports one, check-<name>-result.
+	// Findings are what a failed check reports, one per failure (ygg.check/v1, read by gleipnir): each is open,
+	// has the id check-<name>-<12 hex> and the check as its source. A failing check's outcome always carries at
+	// least one finding: when its result lists no failure (no typed result, a crash, a timeout), the check
+	// package gives one, check-<name>-result. Book.CheckFailed refuses an outcome without.
 	Findings []gungnir.Finding
 	Proof    string   // when it passed: the evidence that it ran and passed, which closes its findings
 	Failed   []string // the ids of the tests the typed result says failed
@@ -129,6 +130,8 @@ const (
 	ReasonDisputed   = "finding-disputed" // the implementer disputed a finding that no check settled
 	ReasonUnreadable = "reviewer-unreadable"
 	ReasonBlocked    = "implementer-blocked" // the implementer answered that it could not do the work: a person decides
+	// ReasonReviewerBlocked: a reviewer answered twice in a row that it could not review the work.
+	ReasonReviewerBlocked = "reviewer-blocked"
 )
 
 // Outcome is how a run of the loop ended.
@@ -273,19 +276,21 @@ func blockingFrom(st *State, reviewer string) bool {
 }
 
 // review asks one reviewer, and asks it once more if its answer can't be used: an answer that can't be
-// read, one that says it is blocked, one that drops a finding, one that closes a finding without proof, or a session that failed.
-// Neither runs the implementer again. Twice in a row, the loop escalates (spec §4.6). stop is true when
-// the loop ends here.
+// read, one that says it is blocked, one that drops a finding, one that closes a finding without proof, or a
+// session that failed. Neither runs the implementer again. Twice in a row, the loop escalates (spec §4.6): as
+// reviewer-blocked when the second answer said it was blocked, with its reason, and as reviewer-unreadable
+// otherwise. stop is true when the loop ends here.
 func review(ctx context.Context, st *State, steps Steps, rv string, passed []string) (out Outcome, stop bool, err error) {
 	for {
 		report, err := steps.Review(ctx, st.Attempt, rv, st.Book.OpenFrom(rv), passed)
 		var af *AgentFailure
 		var ue *UnreadableError
 		var why error
+		blocked := ""
 		switch {
 		case err == nil && report.Blocked != nil:
 			// A reviewer that says it could not do its work gave no report: it is asked once more, then a person decides.
-			why = fmt.Errorf("blocked: %s", report.Blocked.Reason)
+			blocked = report.Blocked.Reason
 		case err == nil:
 			changes, rerr := st.Book.Review(st.Attempt, rv, passed, gungnir.Report{Findings: report.Findings})
 			if rerr == nil {
@@ -308,7 +313,12 @@ func review(ctx context.Context, st *State, steps Steps, rv string, passed []str
 		if err := steps.Save(st); err != nil {
 			return Outcome{}, true, err
 		}
-		if st.Unreadable[rv] >= 2 {
+		switch {
+		case st.Unreadable[rv] < 2:
+		case blocked != "":
+			o, err := escalate(st, ReasonReviewerBlocked, fmt.Sprintf("reviewer %s is blocked: %s", rv, blocked))
+			return o, true, err
+		default:
 			o, err := escalate(st, ReasonUnreadable, fmt.Sprintf("reviewer %s gave an answer that can't be used twice in a row; the last time: %v", rv, why))
 			return o, true, err
 		}

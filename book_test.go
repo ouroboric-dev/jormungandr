@@ -141,11 +141,14 @@ func TestACheckNeverTouchesAFindingAnotherSourceRaised(t *testing.T) {
 	}
 }
 
+// settled is what SettleDispute says of findIndexDispute when it holds.
+const settled = "check test ran in attempt 2 and TestFindIndex is among the tests that passed"
+
 func overruledBook(t *testing.T) *Book {
 	t.Helper()
 	var b Book
 	b.Review(1, "spec", passed, report(findIndexBlocker()))
-	ch, err := b.Overrule(2, findIndexDispute, "check test passed in attempt 2")
+	ch, err := b.Overrule(2, findIndexDispute, settled)
 	if err != nil || len(ch) != 1 || ch[0].Kind != Overruled {
 		t.Fatalf("Overrule() = %+v, %v", ch, err)
 	}
@@ -160,6 +163,11 @@ func TestAnOverruledFindingNoLongerBlocksAndIsNotAskedOfItsReviewer(t *testing.T
 	r := b.Records["spec-1"]
 	if r.Status != gungnir.FindingOverruled || r.OverruledBy != "test" || r.Closed != 2 || r.Attempts() != 2 {
 		t.Errorf("record = %+v", r)
+	}
+	// The proof is the implementer's evidence and what the check's result showed, in the dispute's words: a check
+	// that settles a dispute need not have passed.
+	if want := "Implementer's evidence: " + findIndexDispute.Evidence + "\n" + settled; r.Proof != want {
+		t.Errorf("proof = %q, want %q", r.Proof, want)
 	}
 	// An empty report is fine: an overruled finding is not "still open and not mentioned".
 	if ch, err := b.Review(3, "spec", passed, report()); err != nil || len(ch) != 0 {
@@ -285,6 +293,17 @@ func TestACheckClosesTheFailuresItNoLongerReports(t *testing.T) {
 	}
 	if ch, err := b.CheckFailed(4, "test", checkFindings("vet", 9)); err == nil || len(ch) != 0 {
 		t.Errorf("a finding of another check = %+v, %v; want an error and no change", ch, err)
+	}
+	// A check's failure is open: one that says otherwise is refused, and nothing changes.
+	for _, st := range []gungnir.FindingStatus{gungnir.FindingFixed, gungnir.FindingDisputed, gungnir.FindingOverruled} {
+		fs := checkFindings("test", 2, 5)
+		fs[1].Status, fs[1].Proof = st, "pkg/f5_test.go:5"
+		if ch, err := b.CheckFailed(4, "test", fs); err == nil || len(ch) != 0 || !strings.Contains(err.Error(), string(st)) {
+			t.Errorf("a %s finding = %+v, %v; want an error and no change", st, ch, err)
+		}
+		if _, ok := b.Records[fs[1].ID]; ok || len(b.OpenFrom("test")) != 2 {
+			t.Errorf("a %s finding changed the book: %v", st, ids(b.Open()))
+		}
 	}
 }
 

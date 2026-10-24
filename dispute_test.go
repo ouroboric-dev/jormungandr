@@ -98,10 +98,14 @@ func TestADisputeThatDoesNotHoldLeavesTheFindingOpenAndTheNextAttemptIsToldWhy(t
 		t.Fatalf("attempt 3 input rejected = %+v", got)
 	}
 	text := FeedbackWith(f.inputs[2].Open, got, "", "")
-	for _, w := range []string{"## Your disputes that did not hold", "spec-1", "check test", "TestFindIndex", "still fails TestFindIndex", "stays open"} {
+	for _, w := range []string{"## Your disputes that did not hold", "spec-1", "check test", "TestFindIndex", "still fails TestFindIndex", "stays open",
+		"dispute it again with a check of this loop whose result lists the test among the tests that passed"} {
 		if !strings.Contains(text, w) {
 			t.Errorf("feedback lacks %q:\n%s", w, text)
 		}
+	}
+	if strings.Contains(text, "prints its id") {
+		t.Errorf("feedback still asks for a check that prints the test's id:\n%s", text)
 	}
 }
 

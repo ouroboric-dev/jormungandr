@@ -236,7 +236,6 @@ func TestAnUnreadableReviewIsAskedOnceMore(t *testing.T) {
 	for name, bad := range map[string]answer{
 		"prose":                   {err: &UnreadableError{Reviewer: "spec", Err: errors.New("not a JSON document")}},
 		"a finding with no place": {err: &UnreadableError{Reviewer: "spec", Err: errors.New("/findings/0 missing location")}},
-		"a blocked reviewer":      {rev: schema.Review{Blocked: &gungnir.Blocked{Reason: "no repository"}}},
 		"a failed session":        {err: &AgentFailure{Reason: "exit 1"}},
 	} {
 		f := &fakeSteps{review: map[string][]answer{"spec": {bad, good}}}
@@ -253,6 +252,39 @@ func TestAnUnreadableReviewIsAskedOnceMore(t *testing.T) {
 		}
 		if !strings.Contains(out.Detail, "spec") {
 			t.Errorf("%s: the detail %q doesn't name the reviewer", name, out.Detail)
+		}
+	}
+}
+
+func TestABlockedReviewerIsAskedOnceMoreThenEscalatesAsBlocked(t *testing.T) {
+	if ReasonReviewerBlocked != "reviewer-blocked" {
+		t.Errorf("ReasonReviewerBlocked = %q", ReasonReviewerBlocked)
+	}
+	good := answer{rev: rep()}
+	blocked := answer{rev: schema.Review{Blocked: &gungnir.Blocked{Reason: "the diff is not in the workspace"}}}
+	unreadable := answer{err: &UnreadableError{Reviewer: "spec", Err: errors.New("not a JSON document")}}
+
+	f := &fakeSteps{review: map[string][]answer{"spec": {blocked, good}}}
+	if out := run(t, NewState(cfg), f); out.Kind != Passed || f.nr["spec"] != 2 || strings.Count(strings.Join(f.calls, "\n"), "implement") != 1 {
+		t.Errorf("blocked once: Run() = %+v, spec asked %d times; want a pass after asking again, without a new attempt", out, f.nr["spec"])
+	}
+	for name, c := range map[string]struct {
+		answers []answer
+		reason  string
+		detail  string
+	}{
+		"blocked twice":            {[]answer{blocked, blocked, good}, ReasonReviewerBlocked, "the diff is not in the workspace"},
+		"unreadable, then blocked": {[]answer{unreadable, blocked, good}, ReasonReviewerBlocked, "the diff is not in the workspace"},
+		"blocked, then unreadable": {[]answer{blocked, unreadable, good}, ReasonUnreadable, "not a JSON document"},
+	} {
+		f := &fakeSteps{review: map[string][]answer{"spec": c.answers}}
+		st := NewState(cfg)
+		out := run(t, st, f)
+		if out.Kind != Escalated || out.Reason != c.reason || st.Passed || f.nr["spec"] != 2 || f.ran("review 1 quality") {
+			t.Errorf("%s: Run() = %+v; want an escalation as %s", name, out, c.reason)
+		}
+		if !strings.Contains(out.Detail, c.detail) || !strings.Contains(out.Detail, "spec") {
+			t.Errorf("%s: the detail %q lacks the reviewer or %q", name, out.Detail, c.detail)
 		}
 	}
 }
@@ -424,5 +456,14 @@ func TestABlockedImplementerEscalatesAtOnce(t *testing.T) {
 	}
 	if last := f.saved[len(f.saved)-1]; last.Attempt != 2 || last.Phase != PhaseImplement || !strings.Contains(last.Failure, "the contract is missing from the spec") {
 		t.Errorf("last save = attempt %d, phase %q, failure %q", last.Attempt, last.Phase, last.Failure)
+	}
+	// The operator sends the work back: the next attempt is told why the last one stopped.
+	st.Extend(cfg)
+	g := &fakeSteps{}
+	if out := run(t, st, g); out.Kind != Passed || out.Attempts != 2 {
+		t.Fatalf("after the operator sent it back: Run() = %+v", out)
+	}
+	if got := g.inputs[0].LastFailure; got != "you answered that you were blocked: the contract is missing from the spec" {
+		t.Errorf("attempt 2's LastFailure = %q; want the blocked reason", got)
 	}
 }
