@@ -180,7 +180,7 @@ If you believe a finding above is wrong, do not just say so, and do not change c
 
 - "id" is a finding listed above. You can't dispute a finding raised by a check: fix the work.
 - "check" is the name of one of this loop's checks. It must run after your work.
-- "test" is the id of a test that check runs, such as its name. The dispute holds when the check passes, or runs and that test is not among the tests it reports as failed. If the check still fails that test, the dispute does not hold.
+- "test" is the id of a test that check runs, as the check's result names it. The dispute holds when the named check runs in the attempt and its result lists the named test among the tests that passed. If the check does not run, still fails that test, or does not list it as passed, the dispute does not hold.
 - "evidence" says what the test showed and where in the code.
 
 A dispute that holds closes the finding. One that does not hold leaves it open, and you are told why. If you have no disputes, leave the field out or empty: no finding changes.`

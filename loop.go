@@ -87,7 +87,10 @@ type CheckOutcome struct {
 	// reports one, check-<name>-result.
 	Findings []gungnir.Finding
 	Proof    string   // when it passed: the evidence that it ran and passed, which closes its findings
-	Failed   []string // the ids of the tests the typed result says failed; a dispute is settled on them
+	Failed   []string // the ids of the tests the typed result says failed
+	// PassedTests are the ids of the tests the typed result says ran and passed (ygg.check/v1 passed_tests). A
+	// dispute holds only on a test listed here.
+	PassedTests []string
 }
 
 // Steps are the side effects of a loop, which Odin implements. A step that stops the loop for a budget
@@ -98,10 +101,6 @@ type Steps interface {
 	// returns the implementer's answer, read and decoded as a ygg.implement/v1 document: one that can't be
 	// read is an *AgentFailure.
 	Implement(ctx context.Context, attempt int, in Input) (schema.Implement, error)
-	// Dispute decides one dispute after the attempt's checks ran (SettleDispute is the rule): it holds when the
-	// named check passed in this attempt, or ran and its Failed does not hold d.Test. A Holds outcome carries the proof (the check
-	// run); DoesNotHold carries the reason; Unsettleable says no check of the loop can settle it.
-	Dispute(ctx context.Context, attempt int, d gungnir.Dispute) (DisputeOutcome, error)
 	// Check runs one check of the ladder on the committed work.
 	Check(ctx context.Context, attempt int, name string) (CheckOutcome, error)
 	// Review runs one read-only reviewer and returns its report, read and decoded as a ygg.review/v1
@@ -203,12 +202,14 @@ func Run(ctx context.Context, cfg Config, st *State, steps Steps) (Outcome, erro
 // must stop. Otherwise the work failed the ladder, and the next attempt starts.
 func ladder(ctx context.Context, cfg Config, st *State, steps Steps) (out Outcome, done bool, err error) {
 	var passed []string
+	ran := map[string]CheckOutcome{} // this attempt's outcomes, by check: the disputes are settled on them
 	clear := true
 	for _, name := range cfg.Checks {
 		co, err := steps.Check(ctx, st.Attempt, name)
 		if err != nil {
 			return Outcome{}, true, err
 		}
+		ran[name] = co
 		var changes []Change
 		var cerr error
 		if co.Passed {
@@ -229,7 +230,7 @@ func ladder(ctx context.Context, cfg Config, st *State, steps Steps) (out Outcom
 			break // the ladder stops at the first rung that fails: the slower ones wait
 		}
 	}
-	if out, stop, err := settleDisputes(ctx, cfg, st, steps); err != nil || stop {
+	if out, stop, err := settleDisputes(cfg, st, steps, ran); err != nil || stop {
 		return out, true, err
 	}
 	for _, rv := range cfg.Reviewers {

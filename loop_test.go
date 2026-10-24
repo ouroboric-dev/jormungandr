@@ -17,8 +17,8 @@ import (
 type fakeSteps struct {
 	implement []error                   // per implementer session; nil is a success
 	answers   []schema.Implement        // per implementer session: its final answer
-	verdicts  map[string]DisputeOutcome // per finding id: how Dispute decides it; no entry is "does not hold"
 	check     map[string][]bool         // per check: passes, per attempt that reaches it
+	results   map[string][]CheckOutcome // per check: its outcome, per attempt that reaches it; overrides check
 	review    map[string][]answer       // per reviewer: its answers, in order
 	calls     []string                  // what ran, in order
 	inputs    []Input                   // what each implementer session was given
@@ -50,14 +50,6 @@ func (f *fakeSteps) Implement(_ context.Context, attempt int, in Input) (schema.
 	return out, err
 }
 
-func (f *fakeSteps) Dispute(_ context.Context, attempt int, d gungnir.Dispute) (DisputeOutcome, error) {
-	f.calls = append(f.calls, fmt.Sprintf("dispute %d %s", attempt, d.ID))
-	if v, ok := f.verdicts[d.ID]; ok {
-		return v, nil
-	}
-	return DisputeOutcome{Verdict: DoesNotHold, Reason: "check " + d.Check + " still fails " + d.Test}, nil
-}
-
 func (f *fakeSteps) Check(_ context.Context, attempt int, name string) (CheckOutcome, error) {
 	f.calls = append(f.calls, fmt.Sprintf("check %d %s", attempt, name))
 	if f.nc == nil {
@@ -65,14 +57,22 @@ func (f *fakeSteps) Check(_ context.Context, attempt int, name string) (CheckOut
 	}
 	i := f.nc[name]
 	f.nc[name]++
-	passes := f.check[name]
-	ok := i >= len(passes) || passes[i]
-	id := "check-" + name
-	if ok {
-		return CheckOutcome{Passed: true, Proof: fmt.Sprintf("check %s: exit 0", name)}, nil
+	var co CheckOutcome
+	if rs := f.results[name]; i < len(rs) {
+		co = rs[i]
+	} else {
+		passes := f.check[name]
+		co.Passed = i >= len(passes) || passes[i]
 	}
-	return CheckOutcome{Findings: []gungnir.Finding{{ID: id, Source: name, Severity: gungnir.SeverityBlocker,
-		Location: "logs/" + name + ".log:1", Claim: "check " + name + " failed", Status: gungnir.FindingOpen}}}, nil
+	co.Check = name
+	switch {
+	case co.Passed && co.Proof == "":
+		co.Proof = fmt.Sprintf("check %s: exit 0", name)
+	case !co.Passed && len(co.Findings) == 0:
+		co.Findings = []gungnir.Finding{{ID: "check-" + name, Source: name, Severity: gungnir.SeverityBlocker,
+			Location: "logs/" + name + ".log:1", Claim: "check " + name + " failed", Status: gungnir.FindingOpen}}
+	}
+	return co, nil
 }
 
 func (f *fakeSteps) Review(_ context.Context, attempt int, reviewer string, open []gungnir.Finding, passed []string) (schema.Review, error) {
@@ -89,8 +89,14 @@ func (f *fakeSteps) Review(_ context.Context, attempt int, reviewer string, open
 	return as[i].rev, as[i].err
 }
 
-func (f *fakeSteps) Record(_ int, changes []Change) error {
+// Record keeps the changes, and puts an overruling among the calls, so a test sees when the loop settled a dispute.
+func (f *fakeSteps) Record(attempt int, changes []Change) error {
 	f.changes = append(f.changes, changes...)
+	for _, c := range changes {
+		if c.Kind == Overruled {
+			f.calls = append(f.calls, fmt.Sprintf("overruled %d %s", attempt, c.Finding.ID))
+		}
+	}
 	return nil
 }
 
