@@ -70,17 +70,30 @@ func Refusal(text string) string {
 
 // AnswerInstructions tells a session how to hand back its answer, which is a document of contract c. The
 // fields come from the contract's embedded schema: its top-level properties, in the schema's order, with their
-// descriptions, and the ones the schema requires when the session is not blocked. viaSubmit says the session has
-// the `submit` tool, which checks the document and tells it what to fix; without it, the final answer is the
-// document.
-func AnswerInstructions(c schema.Contract, viaSubmit bool) string {
+// descriptions, and the ones the schema requires when the session is not blocked. The schema itself follows, as
+// one compact JSON document that refers to no other file, so the session knows every nested shape. viaSubmit says
+// the session has the `submit` tool, which checks the document and tells it what to fix; without it, the final
+// answer is the document. A contract with no embedded schema is an error.
+func AnswerInstructions(c schema.Contract, viaSubmit bool) (string, error) {
+	name, ok := c.SchemaFile()
+	if !ok {
+		return "", fmt.Errorf("contract %s has no embedded schema", c)
+	}
+	fields, err := answerFields(name)
+	if err != nil {
+		return "", fmt.Errorf("contract %s: %w", c, err)
+	}
+	bundled, err := bundledSchema(name)
+	if err != nil {
+		return "", fmt.Errorf("contract %s: %w", c, err)
+	}
 	var b strings.Builder
 	if viaSubmit {
 		fmt.Fprintf(&b, "Hand back your answer by calling the tool `submit` with it; it tells you what to fix. Your answer is a `%s` document:\n", c)
 	} else {
 		fmt.Fprintf(&b, "Your whole final answer is one `%s` JSON document and nothing else. Its fields:\n", c)
 	}
-	fields, _ := answerFields(c)
+	blocked := false
 	for _, f := range fields {
 		fmt.Fprintf(&b, "- `%s`", f.name)
 		if f.required {
@@ -90,9 +103,13 @@ func AnswerInstructions(c schema.Contract, viaSubmit bool) string {
 			b.WriteString(": " + f.description)
 		}
 		b.WriteString("\n")
+		blocked = blocked || f.name == "blocked"
 	}
-	b.WriteString("Use `blocked`, with a reason, only when the work cannot be done: a person will see it.")
-	return b.String()
+	fmt.Fprintf(&b, "The schema of a `%s` document:\n%s", c, bundled)
+	if blocked {
+		b.WriteString("\nUse `blocked`, with a reason, only when the work cannot be done: a person will see it.")
+	}
+	return b.String(), nil
 }
 
 // answerField is one top-level property of a contract's schema.
@@ -101,14 +118,9 @@ type answerField struct {
 	required          bool // required when the document is not blocked
 }
 
-// answerFields reads the top-level properties of the contract's schema, in the order the schema lists them. A
-// property that is a local $ref takes the description of what it points at. An unreadable or missing schema
-// gives no fields.
-func answerFields(c schema.Contract) ([]answerField, error) {
-	name, ok := c.SchemaFile()
-	if !ok {
-		return nil, fmt.Errorf("%s has no embedded schema", c)
-	}
+// answerFields reads the top-level properties of the embedded schema file name, in the order the schema lists
+// them. A property that is a local $ref takes the description of what it points at.
+func answerFields(name string) ([]answerField, error) {
 	raw, err := fs.ReadFile(schema.SchemaFS(), name)
 	if err != nil {
 		return nil, err
@@ -130,6 +142,107 @@ func answerFields(c schema.Contract) ([]answerField, error) {
 		fields = append(fields, answerField{name: p.name, description: desc, required: slices.Contains(doc.Else.Required, p.name)})
 	}
 	return fields, nil
+}
+
+// bundledSchema returns the embedded schema file name as one compact JSON document. Each other embedded file it
+// refers to by $ref, directly or through another, goes into its $defs under the file's name (finding.schema.json
+// becomes #/$defs/finding), without its own $id and $schema, and every $ref is rewritten to point inside the one
+// document.
+func bundledSchema(name string) (string, error) {
+	root, err := readSchema(name)
+	if err != nil {
+		return "", err
+	}
+	defs, _ := root["$defs"].(map[string]any)
+	if defs == nil {
+		defs = map[string]any{}
+	}
+	keys := map[string]string{} // embedded file: its key in $defs
+	var embed func(file string) (string, error)
+	var rewrite func(v any, self string) error
+	embed = func(file string) (string, error) {
+		if k, ok := keys[file]; ok {
+			return k, nil
+		}
+		k := strings.TrimSuffix(file, ".schema.json")
+		for defs[k] != nil {
+			k += "_"
+		}
+		s, err := readSchema(file)
+		if err != nil {
+			return "", err
+		}
+		delete(s, "$id")
+		delete(s, "$schema")
+		keys[file], defs[k] = k, s
+		return k, rewrite(s, "#/$defs/"+k)
+	}
+	// rewrite points every $ref in v inside the bundle; self is where v's own document now sits ("#" for the root).
+	rewrite = func(v any, self string) error {
+		switch v := v.(type) {
+		case map[string]any:
+			for key, x := range v {
+				ref, isRef := x.(string)
+				if key != "$ref" || !isRef {
+					if err := rewrite(x, self); err != nil {
+						return err
+					}
+					continue
+				}
+				file, frag, _ := strings.Cut(ref, "#")
+				if file == "" {
+					v[key] = self + frag
+					continue
+				}
+				if strings.ContainsAny(file, ":/") {
+					return fmt.Errorf("%s: can't bundle $ref %q: not a file beside it", name, ref)
+				}
+				k, err := embed(file)
+				if err != nil {
+					return err
+				}
+				if v[key] = "#/$defs/" + k + frag; k == "" {
+					v[key] = "#" + frag // the root itself
+				}
+			}
+		case []any:
+			for _, x := range v {
+				if err := rewrite(x, self); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	keys[name] = "" // the root itself
+	if err := rewrite(root, "#"); err != nil {
+		return "", err
+	}
+	if len(defs) > 0 {
+		root["$defs"] = defs
+	}
+	var out bytes.Buffer
+	enc := json.NewEncoder(&out)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(root); err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(out.String(), "\n"), nil
+}
+
+// readSchema reads an embedded schema file as a JSON object, keeping its numbers as written.
+func readSchema(name string) (map[string]any, error) {
+	raw, err := fs.ReadFile(schema.SchemaFS(), name)
+	if err != nil {
+		return nil, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var doc map[string]any
+	if err := dec.Decode(&doc); err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	return doc, nil
 }
 
 // orderedProperties is a schema's "properties" object, kept in the order of the file.
@@ -209,11 +322,16 @@ func WithDisputeFormat(prompt string, open []gungnir.Finding, checks []string) s
 
 // ReviewRequest is the text added to a reviewer's prompt: how to answer, the findings it reported
 // before, and the checks that passed on the work it is about to read. Findings of other sources are not
-// shown to it: a reviewer judges its own. viaSubmit says the reviewer has the `submit` tool.
-func ReviewRequest(reviewer string, open []gungnir.Finding, passed []string, viaSubmit bool) string {
+// shown to it: a reviewer judges its own. viaSubmit says the reviewer has the `submit` tool. The error is
+// AnswerInstructions'.
+func ReviewRequest(reviewer string, open []gungnir.Finding, passed []string, viaSubmit bool) (string, error) {
+	answer, err := AnswerInstructions(schema.ContractReview, viaSubmit)
+	if err != nil {
+		return "", err
+	}
 	var b strings.Builder
 	b.WriteString("## Your answer\n\nYour id is " + reviewer + ". Use it as the \"source\" of every finding.\n\n" +
-		AnswerInstructions(schema.ContractReview, viaSubmit) + "\n\n" + reviewRules + "\n\n")
+		answer + "\n\n" + reviewRules + "\n\n")
 	if len(passed) > 0 {
 		b.WriteString("The checks that passed on this work: " + strings.Join(passed, ", ") + ".\n\n")
 	}
@@ -224,5 +342,5 @@ func ReviewRequest(reviewer string, open []gungnir.Finding, passed []string, via
 		b.WriteString("## Findings you reported before and still hold open\n\nReport each of these again, with the same id: as open if the problem is still there, or as fixed with proof if it is gone. " +
 			"One you leave out is an error.\n\n```json\n" + string(raw) + "\n```\n")
 	}
-	return b.String()
+	return b.String(), nil
 }

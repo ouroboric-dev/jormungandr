@@ -275,7 +275,7 @@ func TestTheDisputeInstructionsComeOnlyWithOpenFindings(t *testing.T) {
 }
 
 func TestTheReviewerIsToldARepeatedBlockerAfterADisputeNeedsProof(t *testing.T) {
-	for _, text := range []string{ReviewRequest("spec", nil, nil, true)} {
+	for _, text := range []string{reviewRequest(t, "spec", nil, nil, true)} {
 		for _, w := range []string{"disputed", "failing check", "different location"} {
 			if !strings.Contains(text, w) {
 				t.Errorf("lacks %q:\n%s", w, text)
