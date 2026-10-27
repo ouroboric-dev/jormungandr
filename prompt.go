@@ -112,6 +112,19 @@ func AnswerInstructions(c schema.Contract, viaSubmit bool) (string, error) {
 	return b.String(), nil
 }
 
+// TurnBudget is the line that tells a session how many turns it has, and the turn to hand back its answer
+// before. Odin appends it to the answer instructions of every session that hands back a contract. OpenCode's
+// last step at the cap has no tools, so a session that has not submitted by then hands back nothing (v0 spec §5,
+// after the turn-cap change). Each model step is a turn. The turn to hand back before is two short of the cap,
+// and never below 1. A cap of 0 or less means the node has none, and there is no line.
+func TurnBudget(maxTurns int) string {
+	if maxTurns <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("You have %d turns; each model step is one. Hand back your answer before turn %d: "+
+		"a session that runs out of turns hands back nothing.", maxTurns, max(maxTurns-2, 1))
+}
+
 // answerField is one top-level property of a contract's schema.
 type answerField struct {
 	name, description string

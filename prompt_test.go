@@ -256,3 +256,21 @@ func TestTheReviewRequestCarriesTheAnswerInstructionsAndTheRules(t *testing.T) {
 		}
 	}
 }
+
+func TestTheTurnBudgetNamesTheTurnsAndTheTurnToHandBackBefore(t *testing.T) {
+	for _, tc := range []struct{ n, before int }{{20, 18}, {3, 1}, {2, 1}, {1, 1}} {
+		want := fmt.Sprintf("You have %d turns; each model step is one. Hand back your answer before turn %d: "+
+			"a session that runs out of turns hands back nothing.", tc.n, tc.before)
+		if got := TurnBudget(tc.n); got != want {
+			t.Errorf("TurnBudget(%d) = %q, want %q", tc.n, got, want)
+		}
+	}
+}
+
+func TestNoTurnCapGivesNoBudgetLine(t *testing.T) {
+	for _, n := range []int{0, -1} {
+		if got := TurnBudget(n); got != "" {
+			t.Errorf("TurnBudget(%d) = %q, want empty", n, got)
+		}
+	}
+}
